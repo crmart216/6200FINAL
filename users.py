@@ -42,7 +42,8 @@ class TreeNode:
         self.side = None
         self.epoch = None
         self.nextKey = None
-    def keyRatcheting(self,key):
+        self.rootKey = None
+    def keyGenerating(self,key):
         salt = None
         info = b"keyGeneration"
         hkdf = HKDF(
@@ -52,10 +53,9 @@ class TreeNode:
             info=info,
     )
         fullkey = hkdf.derive(key)
-        self.nextKey = fullkey[16:]
-        return fullkey[:16]
+        return fullkey
     def checkRoot(self):
-        print(root.privateKey)
+        print(self.rootKey)
 root = TreeNode('Root Key')
 admin_Group = None
 # Private Key generator
@@ -77,6 +77,8 @@ class User:
         # Creates DS_View of person I think
         self.dsAccount = DS_User(name)
         self.treeNode = None
+        self.sendCounter = 1
+        self.recieveCounter = 1
 # adding a new member to the users individual tree
     def addNewMember(self,newMember):
         if(root.right is None):
@@ -118,14 +120,12 @@ class User:
                 queue.append(tempNode.right)
         # If all else fails
         return None
-    def generateRootKey(self):
+    def generateRootKey(self,useKey):
         current = self.treeNode
-        newKey = genPrivK()
-        useKey = newKey.private_bytes_raw()
         print(current.name, "starting key is:", useKey)
         while current.parent != root:
             if current.parent.left is current:
-                current.parent.nextKey = current.keyRatcheting(useKey)
+                current.parent.nextKey = current.keyGenerating(useKey)
                 if current.parent.right is None:
                     print("No right side to share with")
                     print("root key before:", useKey)
@@ -134,7 +134,7 @@ class User:
                     print("The key found at: ", current.parent.name)
                     print("Need to share with:", current.parent.right.name)        
             elif current.parent.right is current: 
-                current.parent.nextKey = current.keyRatcheting(useKey)
+                current.parent.nextKey = current.keyGenerating(useKey)
                 if current.parent.left is None:
                     print("No left side to share with")
                     print("root key before:", useKey)
@@ -142,16 +142,45 @@ class User:
                 else:
                     print("The key found at: ", current.parent.name)
                     print("Need to share with:", current.parent.left.name)        
-            useKey = current.nextKey
+            useKey = current.parent.nextKey
             current = current.parent
         if current.parent == root:
-                root.privateKey == current.keyRatcheting(useKey)
-                print("new root key is: ", root.privateKey)
+                current.rootKey = current.keyGenerating(useKey)
+                print("new root key is: ", current.rootKey)
                 if current.parent.left != current and current.parent.left != None:
                     print("need to share with: ", current.parent.left.name)
                 if current.parent.right != current and current.parent.right != None:
                     print("need to share with: ", current.parent.right.name)
-                return root.privateKey
+                return current.rootKey
+    def keyRatcheting(self,key):
+                salt = None
+                info = b"keyGeneration"
+                hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                    length=48,
+                    salt=salt,
+                    info=info,
+            )
+                fullkey = hkdf.derive(key)
+                self.nextKey = fullkey[16:]
+                return fullkey[:16]
+    # Encryption and Decryption functions
+    def encryptMsg(self,message,key):
+        if isinstance(message, str):
+            message = message.encode('utf-8')
+        newKey = self.keyRatcheting(key)
+        aesgcm = AESGCM(newKey)
+        nonce = self.sendCounter.to_bytes(12, byteorder='big')
+        self.sendCounter += 1
+        ciphertext = aesgcm.encrypt(nonce,message,b"") 
+        return ciphertext, nonce
+    def decryptMsg(self,cipherText,key,nonce_sent):
+        newKey = self.keyRatcheting(key)
+        aesgcm = AESGCM(newKey)
+        nonce_sent = self.recieveCounter.to_bytes(12, byteorder='big')
+        self.recieveCounter += 1
+        decrypted = aesgcm.decrypt(nonce_sent,cipherText,b"")
+        return decrypted.decode('utf-8')
             
 class keyPackage:
     def __init__(self, number, name):
@@ -235,15 +264,6 @@ def newInitKeys(user):
     # Remove Keys on Public Database too
     user.dsAccount.dsPublic.pop(0)
     init_KeyGen(user,1)
-# Encryption and Decryption functions
-def encryptMsg(message,key):
-    aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
-    return aesgcm.encrypt(nonce,message)
-def decryptMsg(cipherText,key):
-    aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
-    return aesgcm.decrypt(nonce,cipherText)
 # ----- Create a group chat -----
 # "When client A wants to establish a group with clients B and
 # C, it first initializes a group state containing only itself and
@@ -259,10 +279,9 @@ def createGroup(creator,title, *initialMembers):
     adminNode.parent = root
     creator.treeNode = adminNode
     root.left = adminNode
-    root.privateKey = adminNode.keyRatcheting(adminNode.privateKey.private_bytes_raw())
-    print(adminNode.parent.privateKey.hex())
+    creator.treeNode.rootKey = adminNode.keyGenerating(adminNode.privateKey.private_bytes_raw())
     print("New Group Chat:", title, "| Admin:", creator.name)
-    print("Creator Private Key: ", adminNode.privateKey.private_bytes_raw().hex(), "Root Key: ", root.privateKey.hex())
+    print("Creator Private Key: ", adminNode.privateKey.private_bytes_raw().hex(), "Root Key: ", creator.treeNode.rootKey.hex())
     # Creating the Proposal and Commits
     # add person will be its own function
     # Testing varying amount of parameters
@@ -272,9 +291,12 @@ def createGroup(creator,title, *initialMembers):
             print("Signature Passed")
             print(members.name)
             newNodePosition = creator.addNewMember(members)
-            newWelcome = welcomeMsg(Epoch,newNodePosition,root.privateKey)
+            newWelcome = welcomeMsg(Epoch,newNodePosition,creator.treeNode.rootKey)
             createChat = Proposal("addNewMember(adminNode,members)")
-            print(creator.generateRootKey())
+            newKey = genPrivK()
+            useKey = newKey.private_bytes_raw()
+            creator.treeNode.rootKey = creator.generateRootKey(useKey)
+            print(creator.treeNode.rootKey)
         except InvalidSignature:
             print("Signature Failed")
             return False
