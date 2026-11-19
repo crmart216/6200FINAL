@@ -4,11 +4,14 @@ from collections import deque
 import struct
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.hpke import Suite, KEM, KDF, AEAD
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from deliveryService import *
 
+# Established la suite 
+suite = Suite(KEM.X25519, KDF.HKDF_SHA256, AEAD.AES_128_GCM)
 # Derived from Lab 04
 P = int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
         "29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
@@ -56,6 +59,8 @@ class TreeNode:
         return fullkey
     def checkRoot(self):
         print(self.rootKey)
+    def leafStatus(currentNode):
+        return currentNode != None and currentNode.left is None and currentNode.right is None
 root = TreeNode('Root Key')
 admin_Group = None
 # Private Key generator
@@ -120,19 +125,26 @@ class User:
                 queue.append(tempNode.right)
         # If all else fails
         return None
+    # MISSING: NEEDS TO SEND OUT PRIVATE MESSAGES TO THE RIGHT USERS
     def generateRootKey(self,useKey):
         current = self.treeNode
         print(current.name, "starting key is:", useKey)
         while current.parent != root:
+            # LEFT SIDE OF TREE
             if current.parent.left is current:
                 current.parent.nextKey = current.keyGenerating(useKey)
+                # Checks if parent node has a right child
                 if current.parent.right is None:
                     print("No right side to share with")
                     print("root key before:", useKey)
                     print("root key after:", current.parent.nextKey)
                 else:
                     print("The key found at: ", current.parent.name)
-                    print("Need to share with:", current.parent.right.name)        
+                    # Need to add a while loop to check for children and how many to share with
+                    print("Need to share with:", current.parent.right.name)
+                    # Will encrypt a message specifically for the parent 
+                    cipher = suite.encrypt(current.parent.nextKey, current.parent.right.pubKey, info=b"Key Update")
+                    print("Sending:",cipher, "to user:", current.parent.right.name)        
             elif current.parent.right is current: 
                 current.parent.nextKey = current.keyGenerating(useKey)
                 if current.parent.left is None:
@@ -141,7 +153,9 @@ class User:
                     print("root key after:", current.parent.nextKey)
                 else:
                     print("The key found at: ", current.parent.name)
-                    print("Need to share with:", current.parent.left.name)        
+                    print("Need to share with:", current.parent.left.name)
+                    cipher = suite.encrypt(current.parent.nextKey, current.parent.left.pubKey, info=b"Key Update")
+                    print("Sending:",cipher, "to user:", current.parent.left.name)           
             useKey = current.parent.nextKey
             current = current.parent
         if current.parent == root:
@@ -149,8 +163,34 @@ class User:
                 print("new root key is: ", current.rootKey)
                 if current.parent.left != current and current.parent.left != None:
                     print("need to share with: ", current.parent.left.name)
+                    leftSide = current.parent.left
+                    queue = deque([leftSide])
+                    while queue:
+                        tempNode = queue.popleft()
+                    if tempNode.leafStatus():
+                        print("need to share with: ", tempNode.name)
+                        cipher = suite.encrypt(current.rootKey, tempNode.pubKey, info=b"Key Update")
+                        print("Sending:",cipher, "to user:", tempNode.name) 
+                    else: 
+                        if tempNode.left != None:
+                            queue.append(tempNode.left)
+                        if tempNode.right != None:
+                            queue.append(tempNode.right)
                 if current.parent.right != current and current.parent.right != None:
-                    print("need to share with: ", current.parent.right.name)
+                    rightSide = current.parent.right
+                    queue = deque([rightSide])
+                    while queue:
+                        tempNode = queue.popleft()
+                        if tempNode.leafStatus():
+                           print("need to share with: ", tempNode.name)
+                           cipher = suite.encrypt(current.rootKey, tempNode.pubKey, info=b"Key Update")
+                           print("Sending:",cipher, "to user:", tempNode.name) 
+                        else: 
+                            if tempNode.left != None:
+                                queue.append(tempNode.left)
+                            if tempNode.right != None:
+                                queue.append(tempNode.right)
+                    
                 return current.rootKey
     def keyRatcheting(self,key):
                 salt = None
@@ -280,17 +320,18 @@ def createGroup(creator,title, *initialMembers):
     creator.treeNode = adminNode
     root.left = adminNode
     creator.treeNode.rootKey = adminNode.keyGenerating(adminNode.privateKey.private_bytes_raw())
-    print("New Group Chat:", title, "| Admin:", creator.name)
-    print("Creator Private Key: ", adminNode.privateKey.private_bytes_raw().hex(), "Root Key: ", creator.treeNode.rootKey.hex())
+   # print("New Group Chat:", title, "| Admin:", creator.name)
+   # print("Creator Private Key: ", adminNode.privateKey.private_bytes_raw().hex(), "Root Key: ", creator.treeNode.rootKey.hex())
     # Creating the Proposal and Commits
     # add person will be its own function
     # Testing varying amount of parameters
     for members in initialMembers:
         try:
             members.dsAccount.dsPublic[0].signatureKey.verify(members.dsAccount.dsPublic[0].signedPackage,members.dsAccount.dsPublic[0].serialize_Package())
-            print("Signature Passed")
             print(members.name)
             newNodePosition = creator.addNewMember(members)
+            # Welcome should send the Epoch they will be at, an ordered array of members so each can be added per user
+            # What i mean is alice and bob are in a group chat, want to add charli, alice provides charli with the array [alice,charli] so charli can know the exact positions of each
             newWelcome = welcomeMsg(Epoch,newNodePosition,creator.treeNode.rootKey)
             createChat = Proposal("addNewMember(adminNode,members)")
             newKey = genPrivK()
@@ -298,7 +339,6 @@ def createGroup(creator,title, *initialMembers):
             creator.treeNode.rootKey = creator.generateRootKey(useKey)
             print(creator.treeNode.rootKey)
         except InvalidSignature:
-            print("Signature Failed")
             return False
 
 
