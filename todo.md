@@ -16,10 +16,6 @@
   - if not user should locally store it for later use (this is lowkey not rly important for our project as hopefully everything should be sent in order)
 - But if in order, user ratchets so the nextkey to match that change in root key that the sender had made: should then have matching dec key to the sender encrypted so user can decrypt the message. User must always have a count of the sender state
 
-### Need to fix the add new user function to allow for a 4th member to be added
-
-- I (Zaeya) can do this i just need to remember what needed to be fixed lol
-
 ### Need to actually utilize the proposal and commit functions
 
 - Right now the proposal is shown but not used, we honestly might just need a commit and can just have only one action occur at a time
@@ -35,7 +31,7 @@
 - say alice and charli(new user) are the child of a upper node (not root)
   - alice needs to only send charli the ratcheted key at upper node and then all alice has to do is generate another ratchet to get the root key if its the upper node parent
 - it also provides charli with the current tree structure in some way so charli can reconstruct the whole tree
-  - included in this is the public keys of all users to allow for sending specific messages(more on this below
+  - included in this is the public keys of all users to allow for sending specific messages more on this below
 
 ### Within adding a new member message to existing members
 
