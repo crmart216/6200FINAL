@@ -3,7 +3,7 @@ class DeliveryService:
         pass
     def public_key_package():
         pass
-    def fetch_key_packate():
+    def fetch_key_package():
         pass
     def send_message():
         pass

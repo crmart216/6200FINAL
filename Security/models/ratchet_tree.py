@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from __future__ import annotations
+from .key_package import PublicKeyPackage
 
 @dataclass
 class RatchetTree:
@@ -17,7 +19,7 @@ class RatchetTree:
             self._leaves.append(leaf)
             return leaf_index
         
-        subtree_size = leafe_index & -leaf_index
+        subtree_size = leaf_index & -leaf_index
         leftmost_node_index = 2 * (leaf_index - subtree_size)
         subtree = self._leaves[-1]
 
@@ -26,7 +28,7 @@ class RatchetTree:
         
         previous_parent = subtree.parent
         new_parent = TreeNode(
-            node_index = left.node_index - 1,
+            node_index = leaf.node_index - 1,
             public_key=b"",
             parent=previous_parent,
             left=subtree,
@@ -45,7 +47,7 @@ class RatchetTree:
 
     def get_leaf(self, leaf_index: int) -> TreeNode:
         if not 0 <= leaf_index < len(self._leaves):
-            raise IndexError(f"Leaf index out of bounds.{leaf_index}")
+            raise IndexError(f"Leaf index {leaf_index} is out of bounds.")
         return self._leaves[leaf_index]
         
     def print_tree(self) -> None:
