@@ -10,6 +10,8 @@ from uuid import uuid4
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
+from Security.models.group_models.remove_member_result import RemoveMemberResult
+
 from ...models.group_models.add_member_result import AddMemberResult
 from ...models.group_models.group_state import EpochSecrets
 from ...models.group_models.managed_group_state import ManagedGroupState
@@ -113,6 +115,14 @@ class GroupService:
         welcome = self._welcomes.build_welcome(committer, invitee, next_state, seed)
         return AddMemberResult(commit, welcome, next_state)
 
+    def remove_member(
+        self,
+        committer: User,
+        state: ManagedGroupState,
+        target_leaf_index: int,
+    )-> RemoveMemberResult:
+        pass
+
     def apply_commit(
         self, state: ManagedGroupState, commit: Commit
     ) -> ManagedGroupState:
@@ -181,6 +191,13 @@ class GroupService:
         tree = deepcopy(state.ratchet_tree)
         _ = tree.insert_member(invitee)
         return tree
+
+    def _stage_remove(
+        self,
+        state: ManagedGroupState,
+        target_leaf_index: int,
+    )-> tuple[RatchetTree, tuple[bytes | None, ...]]:
+        pass
 
     def _finish(
         self,
