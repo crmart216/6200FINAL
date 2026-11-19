@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from key_package import PublicKeyPackage
+from ..key_package import PublicKeyPackage
 
 @dataclass
 class Proposal:

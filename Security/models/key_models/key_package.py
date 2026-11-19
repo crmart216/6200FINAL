@@ -59,3 +59,11 @@ class PrivateKeyPackage:
     package_id: str
     _init_private_key: X25519PrivateKey = field(repr=False)
     _leaf_private_key: X25519PrivateKey = field(repr=False)
+
+    @property
+    def init_private_key(self) -> X25519PrivateKey:
+        return self._init_private_key
+
+    @property
+    def leaf_private_key(self) -> X25519PrivateKey:
+        return self._leaf_private_key

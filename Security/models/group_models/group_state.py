@@ -34,6 +34,14 @@ class GroupState:
     # Each dictionary key is a sender's leaf index
     _sender_ratchets: dict[int, SenderRatchet] = field(default_factory=dict, repr=False)
 
+    def private_tree_keys_snapshot(self) -> dict[int, X25519PrivateKey]:
+        return self._private_tree_keys.copy()
+
+    def require_init_secret(self) -> bytes:
+        if self._epoch_secrets is None:
+            raise ValueError("Current epoch secrets are missing.")
+        return self._epoch_secrets.init_secret
+
     
 @dataclass(frozen=True, eq=False, repr=False)
 class EpochSecrets:

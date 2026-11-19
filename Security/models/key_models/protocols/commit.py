@@ -22,3 +22,7 @@ class Commit:
     proposals: list[Proposal]
     update_path: UpdatePath
     confirmation_tag: bytes
+
+@dataclass
+class SignedCommit(Commit):
+    signature: bytes
