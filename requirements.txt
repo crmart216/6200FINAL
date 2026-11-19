@@ -1,0 +1,4 @@
+# Third-party dependencies used by the current project.
+cryptography==50.0.0
+websockets==16.0
+
