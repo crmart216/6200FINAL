@@ -12,6 +12,10 @@ from ....models.key_models.key_package import PrivateKeyPackage, PublicKeyPackag
 from ....models.user import User
 
 
+"""Pair credential bytes with an Ed25519 public signing key obtained from a trusted
+identity source. Package verification compares both fields with the advertised
+package, and Welcome processing uses the expected inviter’s signing key to
+authenticate the group snapshot."""
 @dataclass(frozen=True)
 class TrustedIdentity:
     """The credential and signing key obtained from a trusted identity source."""
@@ -20,6 +24,10 @@ class TrustedIdentity:
     signing_public_key: bytes
 
 
+"""Manage the packages that users prepare for future invitations. Generation returns
+signed public packages and retains the matching private keys on the user.
+Verification checks an advertised package against a trusted identity, and successful
+Welcome processing can then consume the matching private package."""
 class KeyPackageService:
     """Manage signed public key packages and their local private counterparts."""
 
@@ -29,7 +37,7 @@ class KeyPackageService:
         credential: object, 
         count: int
     ) -> list[PublicKeyPackage]:
-        """Generate and sign public packages and store their private counterparts."""
+        """Create the requested count of packages for the user’s byte credential, store their private keys on the user, and return the signed public packages."""
         if count < 0:
             raise ValueError("Package count must be non-negative.")
         if not isinstance(credential, bytes):
@@ -67,7 +75,7 @@ class KeyPackageService:
     def verify_package(
         self, package: PublicKeyPackage, expected: TrustedIdentity
     ) -> bool:
-        """Verify the package against the expected identity and check its keys."""
+        """Return whether the public package matches the expected identity and passes signature and encryption-key checks."""
         if (
             not package.package_id
             or package.credential != expected.credential
@@ -92,7 +100,7 @@ class KeyPackageService:
         return True
 
     def consume_package(self, user: User, package_id: str) -> None:
-        """Remove a private package after successful Welcome processing."""
+        """Delete the private package identified by the package ID from the user’s local store and return None."""
         del user.private_packages[package_id]
 
     def replenish_packages(
@@ -102,7 +110,7 @@ class KeyPackageService:
         available_count: int,
         target_count: int,
     ) -> list[PublicKeyPackage]:
-        """Generate enough packages to bring the available count up to the target."""
+        """Use the user, credential and available count to return enough new public packages to reach the target count, storing their private counterparts locally."""
         if available_count < 0 or target_count < 0:
             raise ValueError("Package counts must be non-negative.")
 

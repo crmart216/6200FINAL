@@ -16,7 +16,13 @@ from ....models.user import User
 from ..key_services.key_package_service import TrustedIdentity
 from .epoch_key_schedule import EpochKeySchedule
 
+"""Describe the signed group information carried inside a Welcome. The fields bind the
+invitation to a package, identify the inviter and invitee slots, and record the
+public tree, signing roster, transcript hash and epoch seed hash needed to check the
+invitation."""
 class _WelcomeInfo(TypedDict):
+    """Describe the signed group information carried inside a Welcome."""
+
     package_id: str
     group_id: str
     title: str
@@ -29,10 +35,15 @@ class _WelcomeInfo(TypedDict):
     transcript_hash: str
     seed_hash: str
 
+"""Construct and open the invitation that brings a new member into an existing group.
+The inviter signs the group snapshot and encrypts it and the epoch seed for the
+invitee. The invitee checks the snapshot against the trusted inviter key and its own
+package before rebuilding the local group state."""
 class WelcomeService:
     """Build and open authenticated invitations for the Add flow."""
 
     def __init__(self) -> None:
+        """Initialize the invitation encryption suite without arguments and return None."""
         self._hpke: Suite = Suite(KEM.X25519, KDF.HKDF_SHA256, AEAD.AES_128_GCM)
 
     def build_welcome(
@@ -42,7 +53,7 @@ class WelcomeService:
         next_state: ManagedGroupState,
         seed: bytes,
     ) -> Welcome:
-        """Sign the staged group info and encrypt it and the epoch seed."""
+        """Use the inviter, invitee package, staged group state and epoch seed to return an encrypted Welcome containing signed group information."""
         tree = next_state.ratchet_tree
         leaves = [leaf.public_key for leaf in tree.iter_leaves()]
         self._validate_slots(next_state.member_signing_keys, leaves)
@@ -90,7 +101,7 @@ class WelcomeService:
         welcome: Welcome,
         expected_inviter: TrustedIdentity,
     ) -> ManagedGroupState:
-        """Verify the invitation and reconstruct the invitee's local state."""
+        """Use the invitee and private package to open the Welcome, verify its contents against the expected inviter, and return the reconstructed managed state."""
         if package.package_id != welcome.package_id:
             raise ValueError("Welcome does not match the supplied private package.")
 
@@ -173,6 +184,7 @@ class WelcomeService:
     def _restore_tree(
         self, leaves: list[bytes], parent_keys: dict[str, str]
     ) -> RatchetTree:
+        """Return a ratchet tree rebuilt from ordered leaf key bytes and the map of parent indices to hex-encoded public keys."""
         tree: RatchetTree = RatchetTree()
         for leaf in leaves:
             # insert_member() only reads the package's leaf public key.
@@ -192,6 +204,7 @@ class WelcomeService:
 
     @staticmethod
     def _parents(tree: RatchetTree) -> Iterator[TreeNode]:
+        """Yield the internal nodes reachable from the supplied ratchet tree’s root."""
         pending: list[TreeNode] = [tree.root] if tree.root is not None else []
         while pending:
             node: TreeNode = pending.pop()
@@ -202,10 +215,12 @@ class WelcomeService:
             )
 
     def _welcome_context(self, package_id: str, part: str) -> bytes:
+        """Return the encoded encryption context for the given package ID and Welcome part name."""
         return self._encode(value=["6200 welcome v1", package_id, part])
 
     @staticmethod
     def _encode(value: object) -> bytes:
+        """Return the supplied JSON-serializable value as compact UTF-8 JSON bytes with sorted object keys."""
         return dumps(obj=value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     
     @staticmethod
@@ -213,6 +228,7 @@ class WelcomeService:
         signing_keys: tuple[bytes | None, ...],
         leaves: list[bytes],
     ) -> None:
+        """Check the signing roster against the ordered leaf keys and return None on success or raise ValueError for inconsistent slots."""
         if not leaves or len(signing_keys) != len(leaves):
             raise ValueError("Welcome roster and tree must have the same nonzero size.")
         if signing_keys[0] is None:

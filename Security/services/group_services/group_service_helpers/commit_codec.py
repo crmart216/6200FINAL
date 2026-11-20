@@ -5,11 +5,15 @@ from ....models.key_models.key_package import PublicKeyPackage
 from ....models.key_models.protocols.commit import Commit
 
 
+"""Serialize the fields used to authenticate membership changes. Both the committer and
+receiving members encode the same prior group context, Add or Remove proposal, and
+ordered update path so they can compute and verify the Commit signature and
+confirmation tag."""
 class CommitCodec:
-    """Encode the canonical bytes used to authenticate an Add commit."""
+    """Serialize the fields used to authenticate membership changes."""
 
     def encode_context(self, state: ManagedGroupState) -> bytes:
-        """Bind the update to the group, epoch, and previous transcript."""
+        """Return canonical context bytes for the managed state’s group ID, epoch and prior transcript hash."""
         return self._encode([
             "6200 commit v1",
             state.group_id,
@@ -23,7 +27,7 @@ class CommitCodec:
         commit: Commit,
         invitee: PublicKeyPackage | None = None,
     ) -> bytes:
-        """Encode one membership proposal and its full ordered update path."""
+        """Return canonical bytes for the context and membership Commit, checking any supplied invitee package against the proposal."""
         if len(commit.proposals) != 1:
             raise ValueError("A membership Commit requires exactly one proposal.")
 
@@ -72,4 +76,5 @@ class CommitCodec:
 
     @staticmethod
     def _encode(value: object) -> bytes:
+        """Return the supplied JSON-serializable value as compact UTF-8 JSON bytes with sorted object keys."""
         return dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")

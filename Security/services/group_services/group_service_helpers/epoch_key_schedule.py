@@ -6,6 +6,10 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
 from ....models.group_models.group_state import EpochSecrets
 
 
+"""Derive the secrets shared by members in a group epoch. A membership transition
+combines the prior initialization secret, the tree update’s commit secret and a
+digest of the encoded Commit body. Separate labels expand the resulting seed into
+five values with distinct protocol roles."""
 class EpochKeySchedule:
     """Derive the seed and secrets used for a group epoch."""
 
@@ -13,7 +17,7 @@ class EpochKeySchedule:
     def derive_next_seed(
         init_secret: bytes, commit_secret: bytes, commit_body: bytes
     ) -> bytes:
-        """Bind the next seed to the current init secret and the commit."""
+        """Return a 32-byte epoch seed derived from the current initialization secret, commit secret and hash of the encoded Commit body."""
         return HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -23,8 +27,9 @@ class EpochKeySchedule:
 
     @staticmethod
     def derive_epoch_secrets(seed: bytes) -> EpochSecrets:
-        """Expand an epoch seed into the five secrets used by GroupState."""
+        """Expand the supplied seed and return the epoch’s initialization, encryption, sender-data, confirmation and membership secrets."""
         def expand(label: bytes) -> bytes:
+            """Return 32 bytes derived from the enclosing epoch seed for the supplied purpose label."""
             return HKDFExpand(
                 algorithm=hashes.SHA256(),
                 length=32,

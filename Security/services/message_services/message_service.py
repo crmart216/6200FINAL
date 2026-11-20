@@ -22,18 +22,27 @@ _MAX_GENERATION = (1 << 32) - 1
 _SIGNATURE_LABEL = b"6200 application signature v1/"
 
 
+"""Hold the material derived for one sender generation. The message key and base nonce
+protect the current payload, while the next ratchet carries the chain secret and
+generation counter needed for the following message."""
 @dataclass(frozen=True, repr=False)
 class RatchetStep:
+    """Hold the material derived for one sender generation."""
+
     message_key: bytes
     nonce: bytes
     next_ratchet: SenderRatchet
 
 
+"""Protect application messages within a group epoch. Sending signs the text and
+encrypts both the signed payload and its sender metadata. Receiving checks the
+group, epoch, sender generation and signature before advancing that sender’s ratchet
+and returning the decoded text."""
 class MessageService:
     """Sign, encrypt, and receive in-order application messages."""
 
     def advance_ratchet(self, ratchet: SenderRatchet) -> RatchetStep:
-        """Derive one message key, base nonce, and the next ratchet state."""
+        """Derive and return the message key, base nonce and next sender ratchet from the supplied ratchet without advancing it in place."""
         generation = ratchet.next_generation
         if not 0 <= generation <= _MAX_GENERATION:
             raise ValueError("Sender ratchet generation is out of range.")
@@ -52,7 +61,7 @@ class MessageService:
     def encrypt(
         self, sender: User, state: GroupState, plaintext: str
     ) -> ApplicationMessage:
-        """Sign and encrypt a message, then advance the local sender ratchet."""
+        """Sign and encrypt the sender’s plaintext using its group state, advance its local ratchet, and return an application message."""
         state, secrets = self._require_state(state)
         leaf_index = state.own_leaf_index
         expected_key = self._member_key(state, leaf_index)
@@ -89,7 +98,7 @@ class MessageService:
             return message
 
     def decrypt(self, state: GroupState, message: ApplicationMessage) -> str:
-        """Verify and decrypt a message before advancing its receive ratchet."""
+        """Use the recipient’s group state to decrypt and verify the application message, advance the sender’s receive ratchet, and return decoded text."""
         state, secrets = self._require_state(state)
         if (message.group_id, message.epoch) != (state.group_id, state.epoch):
             raise ValueError("Application message group or epoch mismatch.")
@@ -136,6 +145,7 @@ class MessageService:
         context: bytes,
         leaf_index: int,
     ) -> SenderRatchet:
+        """Return the leaf’s cached sender ratchet from the managed state or derive its initial chain from the epoch secrets, context and leaf index."""
         ratchet = state.get_sender_ratchet(leaf_index)
         if ratchet is not None:
             return ratchet
@@ -148,6 +158,7 @@ class MessageService:
     def _sender_data(
         self, secrets: EpochSecrets, ciphertext: bytes
     ) -> tuple[bytes, bytes]:
+        """Derive and return the sender-metadata encryption key and nonce from the epoch secrets and payload ciphertext."""
         material = self._expand(
             secrets.sender_data_secret, b"sender-data/" + sha256(ciphertext).digest(), 28
         )
@@ -155,6 +166,7 @@ class MessageService:
 
     @staticmethod
     def _require_state(state: GroupState) -> tuple[ManagedGroupState, EpochSecrets]:
+        """Return the supplied group state and its epoch secrets if it is an initialized managed state, or raise ValueError."""
         if isinstance(state, ManagedGroupState):
             secrets = state.epoch_secrets
             if secrets is not None:
@@ -164,10 +176,12 @@ class MessageService:
 
     @staticmethod
     def _member_key(state: ManagedGroupState, leaf_index: int) -> bytes:
+        """Return the signing public key for the active leaf at the given index in the managed state."""
         return state.require_active_signing_key(leaf_index)
 
     @staticmethod
     def _context(state: ManagedGroupState) -> bytes:
+        """Return encoded context bytes binding the managed state’s group ID, epoch and transcript hash to application messages."""
         return dumps(
             ["6200 application v1", state.group_id, state.epoch, state.transcript_hash.hex()],
             separators=(",", ":"),
@@ -175,10 +189,12 @@ class MessageService:
 
     @staticmethod
     def _nonce(base_nonce: bytes, guard: bytes) -> bytes:
+        """Return the message nonce obtained by XORing the base nonce with the equal-length guard."""
         return bytes(left ^ right for left, right in zip(base_nonce, guard, strict=True))
 
     @staticmethod
     def _expand(secret: bytes, label: bytes, length: int) -> bytes:
+        """Expand the secret under the application-key label prefix and supplied label and return the requested number of bytes."""
         return HKDFExpand(
             algorithm=hashes.SHA256(),
             length=length,

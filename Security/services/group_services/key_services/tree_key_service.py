@@ -18,22 +18,37 @@ from ....models.group_models.ratchet_tree import RatchetTree, TreeNode
 from ....models.key_models.protocols.proposal import UpdatePath, UpdatePathNode
 
 
+"""Hold the private results of building or processing a tree update. The commit secret
+feeds the epoch key schedule, and the node-indexed private keys are installed in the
+member’s next local tree state."""
 @dataclass(repr=False)
 class TreeUpdateSecrets:
+    """Hold the private results of building or processing a tree update."""
+
     commit_secret: bytes
     private_tree_keys: dict[int, X25519PrivateKey]
 
 
+"""Pair a committer’s public update path with its local tree update secrets. The path
+goes into the membership Commit, while the committer uses the secrets to construct
+its own next-epoch state."""
 @dataclass
 class BuiltUpdate:
+    """Pair a committer’s public update path with its local tree update secrets."""
+
     update_path: UpdatePath
     secrets: TreeUpdateSecrets = field(repr=False)
 
 
+"""Build the committer’s update path and recover the corresponding secrets for
+continuing members. Each path node carries a new public key and encrypted path
+secrets for eligible sibling-subtree leaves. A recipient checks the path against its
+staged tree and derives the private keys it can hold."""
 class TreeKeyService:
     """Build and process update paths for the course project's ratchet tree."""
 
     def __init__(self) -> None:
+        """Initialize the tree update encryption suite without arguments and return None."""
         self._hpke_suite: Suite = Suite(KEM.X25519, KDF.HKDF_SHA256, AEAD.AES_128_GCM)
 
     def derive_path_secret(
@@ -41,7 +56,7 @@ class TreeKeyService:
         path_secret: 
         bytes
     ) -> bytes:
-        """Derive the next path secret."""
+        """Return the next 32-byte path secret derived from the current path secret."""
         return self._expand(path_secret, b"path")
 
     def build_update(
@@ -50,7 +65,7 @@ class TreeKeyService:
         next_tree: RatchetTree, 
         context: bytes
     ) -> BuiltUpdate:
-        """Build the public update and return the committer's new private keys."""
+        """Use the committer’s state, staged tree and context to return a public update path together with local private keys and the commit secret."""
         sender = next_tree.get_leaf(state.own_leaf_index)
         steps = self._path_steps(state, next_tree, state.own_leaf_index)
         leaf_key = X25519PrivateKey.generate()
@@ -93,7 +108,7 @@ class TreeKeyService:
         path: UpdatePath,
         context: bytes,
     ) -> TreeUpdateSecrets:
-        """Recover local keys and the commit secret from an authenticated Commit."""
+        """Check the sender’s leaf index and update path against the current state, staged tree and context, then return recovered private keys and the commit secret."""
         if sender_leaf_index == state.own_leaf_index:
             raise ValueError("Use build_update's result for the local commit.")
 
@@ -156,7 +171,7 @@ class TreeKeyService:
         next_tree: RatchetTree, 
         sender_leaf_index: int
     ) -> list[tuple[TreeNode, dict[int, bytes]]]:
-        """Find each parent and its eligible sibling-subtree leaves."""
+        """Return the sender leaf’s ordered ancestors and eligible recipient keys by comparing the current group state with the staged tree."""
         old_keys = {
             leaf.node_index: leaf.public_key
             for leaf in state.ratchet_tree.iter_leaves()
@@ -182,6 +197,7 @@ class TreeKeyService:
         return steps
 
     def _iter_leaves(self, node: TreeNode | None) -> Iterator[TreeNode]:
+        """Yield the supplied node’s descendant leaves from left to right, including the node itself if it is a leaf."""
         if node is None:
             return
         if node.is_leaf():
@@ -193,6 +209,7 @@ class TreeKeyService:
 
     @staticmethod
     def _expand(secret: bytes, label: bytes) -> bytes:
+        """Return 32 bytes derived from the supplied secret and purpose label under the tree-update prefix."""
         return HKDFExpand(
             algorithm=hashes.SHA256(),
             length=32,
@@ -201,5 +218,6 @@ class TreeKeyService:
 
     @staticmethod
     def _hpke_info(context: bytes, parent_index: int, recipient_index: int) -> bytes:
+        """Return encryption context bytes binding the group context to the parent and recipient node indices."""
         indices = pack(">II", parent_index, recipient_index)
         return b"6200 tree update v1/hpke" + indices + context

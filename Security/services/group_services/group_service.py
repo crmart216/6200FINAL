@@ -28,19 +28,24 @@ from .key_services.key_package_service import KeyPackageService, TrustedIdentity
 from .key_services.tree_key_service import TreeKeyService, TreeUpdateSecrets
 
 
+"""Coordinate group creation and membership changes. Creation stores the founder's
+initial state, and accepting a Welcome stores the invitee's state. Adding or
+removing a member returns a staged state for the committer and a signed Commit for
+other continuing members. Only the founder can remove a member."""
 class GroupService:
-    """Stage and apply membership changes for the course group's Add flow."""
+    """Coordinate group creation and membership changes."""
 
     def __init__(
         self, key_packages: KeyPackageService, tree_keys: TreeKeyService
     ) -> None:
+        """Configure the group service with the supplied key-package and tree-key services and return None."""
         self._key_packages: KeyPackageService = key_packages
         self._tree_keys: TreeKeyService = tree_keys
         self._commit_codec: CommitCodec = CommitCodec()
         self._welcomes: WelcomeService = WelcomeService()
 
     def create_group(self, creator: User, title: str) -> ManagedGroupState:
-        """Create and store the founder's epoch-zero state."""
+        """Create a group with the given title for the creator, store its epoch-zero state on the creator, and return that state."""
         group_id = uuid4().hex
         leaf_key = X25519PrivateKey.generate()
         public_key = leaf_key.public_key().public_bytes_raw()
@@ -74,7 +79,7 @@ class GroupService:
         invitee: PublicKeyPackage,
         expected: TrustedIdentity,
     ) -> AddMemberResult:
-        """Stage the committer's next state and build the Commit and Welcome."""
+        """Verify the invitee package against the expected identity and return the committer’s signed Add Commit, Welcome and next state from the supplied state."""
         sender = state.own_leaf_index
         signing_key = committer.signing_key
         if signing_key.public_key().public_bytes_raw() != state.member_signing_keys[sender]:
@@ -121,7 +126,7 @@ class GroupService:
         state: ManagedGroupState,
         target_leaf_index: int,
     ) -> RemoveMemberResult:
-        """Build a signed Remove Commit and stage the founder's next state."""
+        """Use the founder and current state to remove the target leaf index and return the signed Remove Commit and staged next state."""
         sender = state.own_leaf_index
         if sender != 0:
             raise ValueError("Only the founder at leaf 0 may remove members.")
@@ -174,7 +179,7 @@ class GroupService:
         state: ManagedGroupState,
         target_leaf_index: int,
     ) -> tuple[RatchetTree, tuple[bytes | None, ...]]:
-        """Validate the target and preserve its slot in the staged tree and roster."""
+        """Return a copied tree and signing roster with the target leaf index marked vacant in both, preserving indices from the supplied state."""
         if type(target_leaf_index) is not int:
             raise ValueError("The removal target must be an integer leaf index.")
         if target_leaf_index == 0:
@@ -194,7 +199,7 @@ class GroupService:
         state: ManagedGroupState,
         commit: Commit,
     ) -> ManagedGroupState:
-        """Verify a remote membership Commit and return the next local state."""
+        """Verify a remote membership Commit against the current state and return the continuing member’s next group state."""
         if not isinstance(commit, SignedCommit):
             raise ValueError("Expected a signed Commit.")
         if (commit.group_id, commit.epoch) != (state.group_id, state.epoch):
@@ -259,7 +264,7 @@ class GroupService:
     def accept_welcome(
         self, user: User, welcome: Welcome, *, expected_inviter: TrustedIdentity
     ) -> ManagedGroupState:
-        """Authenticate the inviter and consume the package after validation."""
+        """Open the user’s Welcome with the expected inviter identity, consume the private package, and store and return the joined state."""
         package = user.private_packages[welcome.package_id]
         state = self._welcomes.open_welcome(user, package, welcome, expected_inviter)
         self._key_packages.consume_package(user, welcome.package_id)
@@ -269,6 +274,7 @@ class GroupService:
     def _stage_add(
         self, state: ManagedGroupState, invitee: PublicKeyPackage
     ) -> RatchetTree:
+        """Return a copy of the current state’s tree with the invitee package inserted after checking for a duplicate signing key."""
         if invitee.signing_public_key in state.member_signing_keys:
             raise ValueError("This signing identity is already in the group.")
 
@@ -286,6 +292,7 @@ class GroupService:
         secrets: EpochSecrets,
         body: bytes,
     ) -> ManagedGroupState:
+        """Apply the signed Commit to the staged tree and combine the prior state, roster, update keys, epoch secrets and encoded body into the next managed state."""
         nodes = {node.node_index: node for node in self._nodes(tree)}
         sender = tree.get_leaf(commit.sender_leaf_index)
         sender.public_key = commit.update_path.leaf_public_key
@@ -316,10 +323,12 @@ class GroupService:
     @staticmethod
     def _insert_leaf(tree: RatchetTree, public_key: bytes) -> None:
         # RatchetTree.insert_member only reads the package's leaf public key.
+        """Insert a leaf with the given public key into the supplied tree and return None."""
         _ = tree.insert_member(PublicKeyPackage("", b"", b"", public_key, b""))
 
     @staticmethod
     def _nodes(tree: RatchetTree) -> Iterator[TreeNode]:
+        """Yield every node reachable from the supplied tree’s root."""
         pending: list[TreeNode] = [tree.root] if tree.root is not None else []
         while pending:
             node = pending.pop()
@@ -330,4 +339,5 @@ class GroupService:
 
     @staticmethod
     def _init_secret(state: ManagedGroupState) -> bytes:
+        """Return the current initialization secret from the supplied managed state."""
         return state.require_init_secret()
