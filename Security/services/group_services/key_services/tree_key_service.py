@@ -102,6 +102,13 @@ class TreeKeyService:
             raise ValueError("Invalid update-path shape.")
 
         recipient = state.ratchet_tree.get_leaf(state.own_leaf_index)
+        staged_recipient = next_tree.get_leaf(state.own_leaf_index)
+        if (
+            not staged_recipient.public_key
+            or staged_recipient.public_key != recipient.public_key
+        ):
+            raise ValueError("The local member is not active in the staged tree.")
+
         recipient_key = state.private_tree_keys_snapshot().get(recipient.node_index)
         if recipient_key is None:
             raise ValueError("The local leaf private key is missing.")
@@ -166,7 +173,8 @@ class TreeKeyService:
             recipients = {
                 leaf.node_index: leaf.public_key
                 for leaf in self._iter_leaves(sibling)
-                if old_keys.get(leaf.node_index) == leaf.public_key
+                if leaf.public_key
+                and old_keys.get(leaf.node_index) == leaf.public_key
             }
             steps.append((parent, recipients))
             node = parent

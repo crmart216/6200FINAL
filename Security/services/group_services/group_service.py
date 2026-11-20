@@ -108,9 +108,9 @@ class GroupService:
             confirmation_tag=tag,
             signature=signing_key.sign(body + tag),
         )
-
+        roster = (*state.member_signing_keys, invitee.signing_public_key)
         next_state = self._finish(
-            state, tree, commit, invitee, built.secrets, secrets, body
+            state, tree, commit, roster, built.secrets, secrets, body
         )
         welcome = self._welcomes.build_welcome(committer, invitee, next_state, seed)
         return AddMemberResult(commit, welcome, next_state)
@@ -120,45 +120,129 @@ class GroupService:
         committer: User,
         state: ManagedGroupState,
         target_leaf_index: int,
-    )-> RemoveMemberResult:
-        pass
+    ) -> RemoveMemberResult:
+        """Build a signed Remove Commit and stage the founder's next state."""
+        sender = state.own_leaf_index
+        if sender != 0:
+            raise ValueError("Only the founder at leaf 0 may remove members.")
+
+        signing_key = committer.signing_key
+        public_key = signing_key.public_key().public_bytes_raw()
+        if public_key != state.require_active_signing_key(sender):
+            raise ValueError("The committer does not own the founder's signing key.")
+
+        tree, roster = self._stage_remove(state, target_leaf_index)
+        context = self._commit_codec.encode_context(state)
+        built = self._tree_keys.build_update(state, tree, context)
+
+        proposal = Proposal(
+            group_id=state.group_id,
+            epoch=state.epoch,
+            sender_leaf_index=sender,
+            action="remove",
+            target_leaf_index=target_leaf_index,
+        )
+        commit = SignedCommit(
+            group_id=state.group_id,
+            epoch=state.epoch,
+            sender_leaf_index=sender,
+            proposals=[proposal],
+            update_path=built.update_path,
+            confirmation_tag=b"",
+            signature=b"",
+        )
+
+        body = self._commit_codec.encode_body(context, commit)
+        seed = EpochKeySchedule.derive_next_seed(
+            self._init_secret(state), built.secrets.commit_secret, body
+        )
+        secrets = EpochKeySchedule.derive_epoch_secrets(seed)
+        tag = digest(secrets.confirmation_key, body, "sha256")
+        commit = replace(
+            commit,
+            confirmation_tag=tag,
+            signature=signing_key.sign(body + tag),
+        )
+
+        next_state = self._finish(
+            state, tree, commit, roster, built.secrets, secrets, body
+        )
+        return RemoveMemberResult(commit=commit, state=next_state)
+
+    def _stage_remove(
+        self,
+        state: ManagedGroupState,
+        target_leaf_index: int,
+    ) -> tuple[RatchetTree, tuple[bytes | None, ...]]:
+        """Validate the target and preserve its slot in the staged tree and roster."""
+        if type(target_leaf_index) is not int:
+            raise ValueError("The removal target must be an integer leaf index.")
+        if target_leaf_index == 0:
+            raise ValueError("The founder cannot remove itself.")
+
+        # Reject negative, out-of-range, and already-vacant targets.
+        _ = state.require_active_signing_key(target_leaf_index)
+
+        tree = deepcopy(state.ratchet_tree)
+        tree.blank_leaf(target_leaf_index)
+        roster = list(state.member_signing_keys)
+        roster[target_leaf_index] = None
+        return tree, tuple(roster)
 
     def apply_commit(
-        self, state: ManagedGroupState, commit: Commit
+        self,
+        state: ManagedGroupState,
+        commit: Commit,
     ) -> ManagedGroupState:
-        """Authenticate a remote Add commit and return the next local state."""
+        """Verify a remote membership Commit and return the next local state."""
         if not isinstance(commit, SignedCommit):
-            raise ValueError("Expected a signed commit.")
+            raise ValueError("Expected a signed Commit.")
         if (commit.group_id, commit.epoch) != (state.group_id, state.epoch):
             raise ValueError("Commit group or epoch mismatch.")
 
         sender = commit.sender_leaf_index
-        if not 0 <= sender < len(state.member_signing_keys) or sender == state.own_leaf_index:
+        if type(sender) is not int or sender == state.own_leaf_index:
             raise ValueError("Invalid remote committer.")
+        sender_key = state.require_active_signing_key(sender)
+
         if len(commit.proposals) != 1:
-            raise ValueError("Expected one Add proposal.")
-
+            raise ValueError("Expected exactly one membership proposal.")
         proposal = commit.proposals[0]
-        if (
-            (proposal.group_id, proposal.epoch, proposal.sender_leaf_index)
-            != (state.group_id, state.epoch, sender)
-            or proposal.action != "add"
-            or proposal.invitee is None
-        ):
-            raise ValueError("Invalid Add proposal.")
 
-        invitee = proposal.invitee
         context = self._commit_codec.encode_context(state)
-        body = self._commit_codec.encode_body(context, commit, invitee)
-        verifier = Ed25519PublicKey.from_public_bytes(state.member_signing_keys[sender])
+        # The codec checks the proposal's group, epoch, sender, action, and payload.
+        body = self._commit_codec.encode_body(context, commit)
+        verifier = Ed25519PublicKey.from_public_bytes(sender_key)
         verifier.verify(commit.signature, body + commit.confirmation_tag)
 
-        # The authenticated committer vouches for the invitee's identity.
-        identity = TrustedIdentity(invitee.credential, invitee.signing_public_key)
-        if not self._key_packages.verify_package(invitee, identity):
-            raise ValueError("Invalid key package in the Add proposal.")
+        roster: tuple[bytes | None, ...]
+        if proposal.action == "add":
+            invitee = proposal.invitee
+            if invitee is None:
+                raise ValueError("The Add proposal is missing its invitee.")
 
-        tree = self._stage_add(state, invitee)
+            identity = TrustedIdentity(invitee.credential, invitee.signing_public_key)
+            if not self._key_packages.verify_package(invitee, identity):
+                raise ValueError("Invalid key package in the Add proposal.")
+
+            tree = self._stage_add(state, invitee)
+            roster = (*state.member_signing_keys, invitee.signing_public_key)
+
+        elif proposal.action == "remove":
+            if sender != 0:
+                raise ValueError("Only the founder at leaf 0 may remove members.")
+
+            target = proposal.target_leaf_index
+            if target is None:
+                raise ValueError("The Remove proposal is missing its target.")
+            if target == state.own_leaf_index:
+                raise ValueError("The removed member cannot advance to the next epoch.")
+
+            tree, roster = self._stage_remove(state, target)
+
+        else:
+            raise ValueError(f"Unsupported membership action: {proposal.action!r}.")
+
         update = self._tree_keys.process_updates(
             state, tree, sender, commit.update_path, context
         )
@@ -170,7 +254,7 @@ class GroupService:
         if not compare_digest(commit.confirmation_tag, expected_tag):
             raise ValueError("Commit confirmation failed.")
 
-        return self._finish(state, tree, commit, invitee, update, secrets, body)
+        return self._finish(state, tree, commit, roster, update, secrets, body)
 
     def accept_welcome(
         self, user: User, welcome: Welcome, *, expected_inviter: TrustedIdentity
@@ -192,19 +276,12 @@ class GroupService:
         _ = tree.insert_member(invitee)
         return tree
 
-    def _stage_remove(
-        self,
-        state: ManagedGroupState,
-        target_leaf_index: int,
-    )-> tuple[RatchetTree, tuple[bytes | None, ...]]:
-        pass
-
     def _finish(
         self,
         state: ManagedGroupState,
         tree: RatchetTree,
         commit: SignedCommit,
-        invitee: PublicKeyPackage,
+        roster: tuple[bytes | None, ...],
         update: TreeUpdateSecrets,
         secrets: EpochSecrets,
         body: bytes,
@@ -232,7 +309,7 @@ class GroupService:
             ratchet_tree=tree,
             _private_tree_keys=keys,
             _epoch_secrets=secrets,
-            member_signing_keys=(*state.member_signing_keys, invitee.signing_public_key),
+            member_signing_keys=roster,
             transcript_hash=sha256(body + commit.confirmation_tag).digest(),
         )
 

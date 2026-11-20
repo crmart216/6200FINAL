@@ -164,11 +164,7 @@ class MessageService:
 
     @staticmethod
     def _member_key(state: ManagedGroupState, leaf_index: int) -> bytes:
-        if not 0 <= leaf_index < len(state.member_signing_keys):
-            raise ValueError("Sender leaf index is out of range.")
-        if not state.ratchet_tree.get_leaf(leaf_index).public_key:
-            raise ValueError("Sender leaf is blank.")
-        return state.member_signing_keys[leaf_index]
+        return state.require_active_signing_key(leaf_index)
 
     @staticmethod
     def _context(state: ManagedGroupState) -> bytes:

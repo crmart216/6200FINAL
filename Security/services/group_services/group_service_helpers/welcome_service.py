@@ -23,7 +23,7 @@ class _WelcomeInfo(TypedDict):
     epoch: int
     sender_leaf_index: int
     leaf_index: int
-    signing_keys: list[str]
+    signing_keys: list[str | None]
     leaves: list[str]
     parents: dict[str, str]
     transcript_hash: str
@@ -43,8 +43,10 @@ class WelcomeService:
         seed: bytes,
     ) -> Welcome:
         """Sign the staged group info and encrypt it and the epoch seed."""
-        leaf_count = len(next_state.member_signing_keys)
         tree = next_state.ratchet_tree
+        leaves = [leaf.public_key for leaf in tree.iter_leaves()]
+        self._validate_slots(next_state.member_signing_keys, leaves)
+        leaf_count = len(leaves)
         body = self._encode({
             "package_id": invitee.package_id,
             "group_id": next_state.group_id,
@@ -52,10 +54,11 @@ class WelcomeService:
             "epoch": next_state.epoch,
             "sender_leaf_index": next_state.own_leaf_index,
             "leaf_index": leaf_count - 1,
-            "signing_keys": [key.hex() for key in next_state.member_signing_keys],
-            "leaves": [
-                tree.get_leaf(index).public_key.hex() for index in range(leaf_count)
+            "signing_keys": [
+                None if key is None else key.hex()
+                for key in next_state.member_signing_keys
             ],
+            "leaves": [key.hex() for key in leaves],
             "parents": {
                 str(node.node_index): node.public_key.hex()
                 for node in self._parents(tree)
@@ -101,28 +104,40 @@ class WelcomeService:
             data=expected_inviter.signing_public_key
         )
         inviter_key.verify(signature, body)
-        info = cast(_WelcomeInfo, loads(body))
+        info: _WelcomeInfo = cast(_WelcomeInfo, loads(body))
 
         if info["package_id"] != welcome.package_id:
             raise ValueError("Welcome package mismatch.")
         if info["group_id"] in invitee.groups:
             raise ValueError("Group already exists locally.")
 
-        signing_keys: tuple[bytes, ...] = tuple(bytes.fromhex(key) for key in info["signing_keys"])
-        leaves: list[bytes] = [bytes.fromhex(key) for key in info["leaves"]]
+        if not isinstance(info["signing_keys"], list) or not isinstance(info["leaves"], list):
+            raise ValueError("Welcome signing keys and leaves must be arrays.")
+
+        try:
+            signing_keys = tuple(
+                None if key is None else bytes.fromhex(key)
+                for key in info["signing_keys"]
+            )
+            leaves = [bytes.fromhex(key) for key in info["leaves"]]
+            transcript = bytes.fromhex(info["transcript_hash"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid key or transcript encoding in Welcome.") from exc
+
+        self._validate_slots(signing_keys, leaves)
+
         own_index = info["leaf_index"]
         sender = info["sender_leaf_index"]
-        transcript: bytes = bytes.fromhex(info["transcript_hash"])
-        own_signing_key: bytes = invitee.signing_key.public_key().public_bytes_raw()
-        own_leaf_key: bytes = package.leaf_private_key.public_key().public_bytes_raw()
+        own_signing_key = invitee.signing_key.public_key().public_bytes_raw()
+        own_leaf_key = package.leaf_private_key.public_key().public_bytes_raw()
 
         if (
-            info["epoch"] < 1
+            type(info["epoch"]) is not int
+            or info["epoch"] < 1
             or len(transcript) != 32
-            or len(signing_keys) != len(leaves)
-            or len(set(signing_keys)) != len(signing_keys)
-            or any(len(key) != 32 for key in (*signing_keys, *leaves))
+            or type(own_index) is not int
             or own_index != len(leaves) - 1
+            or type(sender) is not int
             or not 0 <= sender < own_index
             or signing_keys[sender] != expected_inviter.signing_public_key
             or signing_keys[own_index] != own_signing_key
@@ -192,3 +207,26 @@ class WelcomeService:
     @staticmethod
     def _encode(value: object) -> bytes:
         return dumps(obj=value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    
+    @staticmethod
+    def _validate_slots(
+        signing_keys: tuple[bytes | None, ...],
+        leaves: list[bytes],
+    ) -> None:
+        if not leaves or len(signing_keys) != len(leaves):
+            raise ValueError("Welcome roster and tree must have the same nonzero size.")
+        if signing_keys[0] is None:
+            raise ValueError("The founder's slot must be active.")
+
+        seen: set[bytes] = set()
+        for signing_key, leaf_key in zip(signing_keys, leaves, strict=True):
+            if signing_key is None:
+                if leaf_key != b"":
+                    raise ValueError("Vacant roster slot has a leaf key.")
+                continue
+
+            if len(signing_key) != 32 or len(leaf_key) != 32:
+                raise ValueError("Active slot requires two 32-byte public keys.")
+            if signing_key in seen:
+                raise ValueError("Duplicate active signing key.")
+            seen.add(signing_key)

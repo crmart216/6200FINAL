@@ -18,9 +18,37 @@ class CommitCodec:
         ])
 
     def encode_body(
-        self, context: bytes, commit: Commit, invitee: PublicKeyPackage
+        self,
+        context: bytes,
+        commit: Commit,
+        invitee: PublicKeyPackage | None = None,
     ) -> bytes:
-        """Encode the Add package and update path for signing and verification."""
+        """Encode one membership proposal and its full ordered update path."""
+        if len(commit.proposals) != 1:
+            raise ValueError("A membership Commit requires exactly one proposal.")
+
+        proposal = commit.proposals[0]
+        if (
+            proposal.group_id != commit.group_id
+            or proposal.epoch != commit.epoch
+            or proposal.sender_leaf_index != commit.sender_leaf_index
+        ):
+            raise ValueError("Proposal group, epoch, or sender differs from the Commit.")
+
+        payload = proposal.require_payload()
+        payload_fields: list[str | int]
+        if isinstance(payload, PublicKeyPackage):
+            if invitee is not None and invitee != payload:
+                raise ValueError("The invitee argument differs from the Add proposal.")
+            payload_fields = [
+                payload.serialize_unsigned().hex(),
+                payload.signature.hex(),
+            ]
+        else:
+            if invitee is not None:
+                raise ValueError("A Remove Commit cannot carry an invitee argument.")
+            payload_fields = [payload]
+
         path = commit.update_path
         nodes = [
             [
@@ -36,9 +64,8 @@ class CommitCodec:
         return self._encode([
             context.hex(),
             commit.sender_leaf_index,
-            "add",
-            invitee.serialize_unsigned().hex(),
-            invitee.signature.hex(),
+            proposal.action,
+            *payload_fields,
             path.leaf_public_key.hex(),
             nodes,
         ])
