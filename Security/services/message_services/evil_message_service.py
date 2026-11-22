@@ -73,7 +73,6 @@ class MessageService:
 
         with _RATCHET_LOCK:
             ratchet = self._ratchet(state, secrets, context, leaf_index)
-            print(f"Epoch: {state.epoch} | Gen: {ratchet.next_generation} | Chain: {ratchet.chain_secret.hex()}")
             step = self.advance_ratchet(ratchet)
             guard = token_bytes(12)
             metadata = pack(">II12s", leaf_index, ratchet.next_generation, guard)
@@ -94,7 +93,6 @@ class MessageService:
                 ciphertext=ciphertext,
             )
             state.set_sender_ratchet(leaf_index, ratchet)
-            print(f"[ENCRYPT] Epoch: {state.epoch} | Sender Leaf: {leaf_index} | Key: {step.message_key.hex()}")
             return message
 
     def decrypt(self, state: GroupState, message: ApplicationMessage) -> str:
@@ -114,8 +112,8 @@ class MessageService:
         leaf_index = int.from_bytes(metadata[:4], "big")
         generation = int.from_bytes(metadata[4:8], "big")
         guard = metadata[8:]
-        if leaf_index == state.own_leaf_index:
-            raise ValueError("Skip delivery to the sender's local group state.")
+       # if leaf_index == state.own_leaf_index:
+       #     raise ValueError("Skip delivery to the sender's local group state.")
 
         signing_key = Ed25519PublicKey.from_public_bytes(
             self._member_key(state, leaf_index)
@@ -134,7 +132,6 @@ class MessageService:
             signing_key.verify(signature, _SIGNATURE_LABEL + aad + payload)
             plaintext = payload.decode("utf-8")
             state.set_sender_ratchet(leaf_index, ratchet)
-            print(f"[DECRYPT] Epoch: {state.epoch} | Sender Leaf: {leaf_index} | Key: {step.message_key.hex()}")
             return plaintext
 
     def _ratchet(
