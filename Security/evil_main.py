@@ -10,13 +10,14 @@ from Security.services.group_services.key_services.tree_key_service import TreeK
 from Security.services.message_services.delivery_service import DeliveryService
 from Security.services.message_services.evil_message_service import MessageService
 from Security.models.group_models.managed_group_state import ManagedGroupState
-
+from Security.mallory import *
 
 def main() -> None:
     packages = KeyPackageService()
     groups = GroupService(packages, TreeKeyService())
     messages = MessageService()
     delivery = DeliveryService()
+    mallory_sniff = MallorySniff()
 
     alice, bob, charlie, eve = (
         User(name.lower(), name) for name in ("Alice", "Bob", "Charlie", "Eve")
@@ -78,24 +79,59 @@ def main() -> None:
         print(f"{sender.display_name}: {text}  [decrypted by {readers}]")
         return packet
 
+    def add(user: User) -> None:
+            nonlocal founder
+            expected = identity(user)
+            package, = packages.generate_packages(user, expected.credential, 1)
+            result = groups.add_member(alice, founder, package, expected)
+            
+            # Existing members apply the Commit. The new member joins via Welcome.
+            deliver_commit(result.commit, [peer for peer in members if peer is not alice])
+            groups.accept_welcome(user, result.welcome, expected_inviter=identity(alice))
+            founder = alice.groups[group_id] = result.state
+            members.append(user)
+            announce(f"Alice added {user.display_name}")
+    def sniffed_Say(sender: User, text: str) -> ApplicationMessage:
+        packet = messages.encrypt(sender, sender.groups[group_id], text)
+        peers = [peer for peer in members if peer is not sender]
+        delivery.send_message([peer.user_id for peer in peers], packet)
+            
+        for peer in peers:
+            received, = delivery.receive_messages(peer.user_id)
+            if not isinstance(received, ApplicationMessage):
+                raise RuntimeError("Expected an application message.")
+            if messages.decrypt(peer.groups[group_id], received) != text:
+                raise RuntimeError(f"{peer.display_name} received a different message.")
+            
+        readers = ", ".join(peer.display_name for peer in peers)
+        print(f"{sender.display_name}: {text}  [decrypted by {readers}]")
+        mallory_sniff.loggedTraffic.append(packet)
+        return packet
+    
     announce("Alice created the group")
 
     add(bob)
     say(alice, "Bob, can you see the chat?")
     say(bob, "Loud and clear.")
     say(alice, "I'll bring Charlie in.")
+    print("Mallory has started to network evesdrop")
 
     add(charlie)
-    say(charlie, "Hey everyone. What are we testing?")
-    say(bob, "Whether we all receive each message.")
-    say(alice, "Let's try it with four people.")
-
+    sniffed_Say(charlie, "Hey everyone. What are we testing?")
+    sniffed_Say(bob, "Whether we all receive each message.")
+    sniffed_Say(alice, "Let's try it with four people.")
+    sniffed_Say(bob, "I hope no one is watching us.")
+    sniffed_Say(alice, "Yea for real.")
+    sniffed_Say(charlie, "Yall goofy asf.")
+    sniffed_Say(alice, "Nah chief")
+    mallory_sniff.attackerDecrypt(messages, charlie.groups[group_id])
     add(eve)
-    say(eve, "I'm here for the four-person test.")
-    say(charlie, "I got your message, Eve.")
-    say(bob, "Same here.")
-    say(alice, "Thanks, Eve. That finishes your part.")
-
+    sniffed_Say(eve, "I'm here for the four-person test.")
+    sniffed_Say(charlie, "I got your message, Eve.")
+    sniffed_Say(bob, "Same here.")
+    sniffed_Say(alice, "Thanks, Eve. That finishes your part.")
+    mallory_sniff.attackerDecrypt(messages, charlie.groups[group_id])
+    
     # Keep Eve's old state so the demo can check it against a new-epoch message.
     eve_state = eve.groups[group_id]
     result = groups.remove_member(alice, founder, eve_state.own_leaf_index)
@@ -109,14 +145,12 @@ def main() -> None:
     packet = say(alice, "Can everyone remaining read this?")
     say(bob, "Yes, I received it.")
     say(charlie, "Me too. Demo complete.")
-
     try:
         messages.decrypt(eve_state, packet)
     except ValueError as error:
         print(f"Eve's old state rejected the new message: {error}")
     else:
         raise RuntimeError("Eve unexpectedly decrypted a post-removal message.")
-
 
 if __name__ == "__main__":
     main()
