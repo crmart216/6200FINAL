@@ -191,7 +191,7 @@ from sqlalchemy.schema import CreateTable
 
 with patch("psycopg.connect", side_effect=AssertionError("Unexpected DB connection")):
     import Server.models
-    from Server.database import Base
+    from Server.core.database import Base
 
     assert len(Base.metadata.tables) == 7
     for table in Base.metadata.sorted_tables:

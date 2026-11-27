@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from starlette.routing import Match
 from starlette.types import Scope
+from textwrap import dedent
 
 from Server.main import app
 from Server.routes.router import router
@@ -24,7 +25,7 @@ def test_app_starts_without_server_settings() -> None:
                 assert client.get("/openapi.json").status_code == 200
             """
     _ = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", dedent(code)],
         cwd=Path(__file__).resolve().parents[2],
         env=env,
         check=True,

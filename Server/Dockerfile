@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-COPY Server/requirements.txt /tmp/server-requirements.txt
+COPY requirements.txt /tmp/server-requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/server-requirements.txt
 COPY Server/ Server/
 COPY Security/ Security/

@@ -1,7 +1,9 @@
 **
 !Server/
 !Server/*.py
-!Server/requirements.txt
+!requirements.txt
+!Server/core/
+!Server/core/*.py
 !Server/alembic.ini
 !Server/models/
 !Server/models/*.py

@@ -77,7 +77,7 @@ def main() -> int:
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-ra", "Server/tests"],
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=Path(__file__).resolve().parents[2],
         env=env,
         check=False,
     )

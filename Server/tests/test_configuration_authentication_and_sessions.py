@@ -58,7 +58,7 @@ def test_base_imports_without_server_configuration() -> None:
         _ = env.pop(name, None)
 
     _ = subprocess.run(
-        [sys.executable, "-c", "from Server.database import Base"],
+        [sys.executable, "-c", "from Server.core.database import Base"],
         cwd=Path(__file__).resolve().parents[2],
         env=env,
         check=True,
@@ -137,7 +137,7 @@ def session_events(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             events.append("close")
 
     monkeypatch.setattr(
-        "Server.dependencies.get_session_factory",
+        "Server.core.dependencies.get_session_factory",
         lambda: RecordingSession,
     )
     return events
