@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .routes import groups, messages, users
+from . import groups, messages, users
 
 router = APIRouter(prefix="/api")
 router.include_router(users.router, prefix="/users")

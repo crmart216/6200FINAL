@@ -4,7 +4,7 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from .config import get_settings
+from Server.core.config import get_settings
 
 
 def main() -> None:

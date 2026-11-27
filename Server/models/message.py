@@ -12,7 +12,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import Constraint
 
-from ..database import Base
+from Server.core.database import Base
 
 
 class Message(Base):

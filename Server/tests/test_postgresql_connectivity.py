@@ -3,7 +3,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from Server.database import get_engine
+from Server.core.database import get_engine
 
 
 if os.getenv("RUN_POSTGRES_TESTS") != "1":

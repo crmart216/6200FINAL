@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import dialect
 from sqlalchemy.schema import CreateTable
 
 from Server import models
-from Server.database import Base
+from Server.core.database import Base
 
 
 COLUMNS = {

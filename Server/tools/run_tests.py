@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
-from Server.config import get_settings
+from Server.core.config import get_settings
 
 
 TEST_DATABASE = "chat_demo_migration_test"

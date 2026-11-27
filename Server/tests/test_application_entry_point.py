@@ -8,7 +8,7 @@ from starlette.routing import Match
 from starlette.types import Scope
 
 from Server.main import app
-from Server.router import router
+from Server.routes.router import router
 
 
 def test_app_starts_without_server_settings() -> None:

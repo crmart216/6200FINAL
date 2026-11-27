@@ -10,7 +10,7 @@ from Security.services.group_services.key_services.key_package_service import (
     TrustedIdentity,
 )
 
-from ..dependencies import CurrentIdentity
+from Server.core.dependencies import CurrentIdentity
 from ..models import KeyPackage, PackageClaim, User
 from ..schemas.public_key_package import PublicKeyPackagePayload
 from ..schemas.user_registration import UserRegistration

@@ -2,7 +2,7 @@ from alembic import context
 from sqlalchemy import Connection
 
 from Server import models
-from Server.database import Base, get_engine
+from Server.core.database import Base, get_engine
 
 target_metadata = Base.metadata  # Importing models registers the seven tables.
 __all__ = ["models", "target_metadata"]

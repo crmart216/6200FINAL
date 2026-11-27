@@ -18,9 +18,9 @@ from sqlalchemy.orm import Session
 from Security.models.key_models.key_package import PublicKeyPackage
 from Security.models.user import User as ClientUser
 from Security.services.group_services.key_services.key_package_service import KeyPackageService
-from Server.config import get_settings
-from Server.database import Base
-from Server.dependencies import get_db
+from Server.core.config import get_settings
+from Server.core.database import Base
+from Server.core.dependencies import get_db
 from Server.main import app
 from Server.models import PackageClaim
 from Server.schemas.public_key_package import PublicKeyPackagePayload, encode_binary

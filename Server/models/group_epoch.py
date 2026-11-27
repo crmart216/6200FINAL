@@ -2,7 +2,7 @@ from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import Constraint
 
-from ..database import Base
+from Server.core.database import Base
 
 
 class GroupEpoch(Base):

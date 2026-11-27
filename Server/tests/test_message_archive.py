@@ -43,8 +43,8 @@ def test_routes_authentication_and_validation(client: TestClient) -> None:
     schema = client.get("/openapi.json")
     base = "/api/groups/{group_id}/messages"
     assert "get" in schema.json()["paths"][base]
-    assert "put" in schema.json()["paths"][base + "/{message_id}"]
-    assert "get" in schema.json()["paths"][base + "/{index}"]
+    assert "put" in schema.json()["paths"][base + "/{message_ref}"]
+    assert "get" in schema.json()["paths"][base + "/{message_ref}"]
     path = f"{MESSAGES}/{FIRST}"
     for headers in ({}, auth("invalid")):
         assert client.put(path, headers=headers, json=packet()).status_code == 401

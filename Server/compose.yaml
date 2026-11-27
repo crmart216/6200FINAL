@@ -1,0 +1,41 @@
+x-server: &server
+  build:
+    context: .
+    dockerfile: Server/Dockerfile
+  image: ${COMPOSE_PROJECT_NAME:-chat6200}-server:local
+  environment:
+    SERVER_DATABASE_URL: postgresql+psycopg://chat_demo_app:${CHAT_APP_PASSWORD:?Set a URL-safe application password}@db:5432/chat_demo
+    SERVER_DEMO_IDENTITIES: ${SERVER_DEMO_IDENTITIES:?Set the JSON identity list}
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the bootstrap password}
+      CHAT_APP_PASSWORD: ${CHAT_APP_PASSWORD:?Set the application password}
+    volumes:
+      - chat-data:/var/lib/postgresql/data
+      - ./Server/init-demo.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  migrate:
+    <<: *server
+    command: ["python", "-m", "alembic", "-c", "Server/alembic.ini", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *server
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  chat-data:

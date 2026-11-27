@@ -14,9 +14,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from Server.config import get_settings
-from Server.database import get_engine, get_session_factory
-from Server.dependencies import CurrentIdentity, get_current_identity, get_db
+from Server.core.config import get_settings
+from Server.core.database import get_engine, get_session_factory
+from Server.core.dependencies import CurrentIdentity, get_current_identity, get_db
 
 
 def clear_caches() -> None:
