@@ -1,4 +1,13 @@
-# Third-party dependencies used by the current project.
-cryptography==50.0.0
-websockets==16.0
+# FastAPI application, HTTP server, and API schemas
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
 
+# PostgreSQL ORM, migrations, and driver
+SQLAlchemy>=2.0,<2.1
+alembic>=1.14,<2
+psycopg[binary]>=3.2,<4
+
+# Verify signed public key packages using the project's crypto dependency
+cryptography==50.0.0
