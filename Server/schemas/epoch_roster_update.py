@@ -1,10 +1,12 @@
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class EpochRosterUpdate(BaseModel):
     member_user_ids: Annotated[list[str], Field(min_length=1)]
+    invitation_id: UUID | None = None
 
     @field_validator("member_user_ids")
     @classmethod

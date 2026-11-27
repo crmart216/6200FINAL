@@ -6,7 +6,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from Server.core.dependencies import CurrentIdentity, get_current_identity, get_db
-from ..schemas.package_claim_request import PackageClaimRequest
 from ..schemas.public_key_package import PublicKeyPackagePayload
 from ..schemas.user_registration import UserRegistration
 from ..schemas.user_response import UserResponse
@@ -43,7 +42,7 @@ def directory_errors() -> Generator[None, None, None]:
     "/{user_id}",
     summary="Update your directory profile",
     responses={403: {"description": "Caller does not own this user ID"},
-               404: {"description": "User is not registered"}},
+                404: {"description": "User is not registered"}},
 )
 def update_profile(user_id: str, data: RegistrationBody, caller: Caller, db: Database) -> UserResponse:
     """Update your display name and listener URL. Your signing key stays pinned."""
@@ -78,19 +77,3 @@ def publish(
     require_owner(caller, user_id)
     with directory_errors():
         return directory.publish(db, caller, package_id, data)
-
-
-@router.post("/{user_id}/key-packages/claims", summary="Claim one package from a peer",
-            responses={404: {"description": "Inviter or invitee has not registered"},
-                        409: {"description": "Pool exhausted or request ID used for another invitee"}})
-def claim(
-    user_id: str, 
-    data: PackageClaimRequest, 
-    caller: Caller,
-    db: Database
-) -> PublicKeyPackagePayload:
-    """Reuse the same request UUID for a retry. The same inviter and invitee receive
-    the original package even when another package is available.
-    """
-    with directory_errors():
-        return directory.claim(db, caller.user_id, user_id, data.request_id)

@@ -8,11 +8,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from Security.models.user import User as ClientUser
 from Server.models import ChatGroup, Message
 from Server.schemas.archive_receipt import ArchiveReceipt
 from .test_user_directory_and_key_packages import (
     alice as alice, auth, bob as bob, client as client, engine as engine, register,
 )
+from .test_group_invitations import claimed_invitation
 
 GROUP = "/api/groups/demo"
 MESSAGES = GROUP + "/messages"
@@ -33,9 +35,9 @@ def setup_group(c: TestClient) -> None:
     assert c.put(GROUP, headers=auth("alice"), json={"group_name": "Chat"}).status_code == 200
 
 
-def publish(c: TestClient, epoch: int, members: list[str]) -> None:
+def publish(c: TestClient, epoch: int, members: list[str], invitation_id: UUID | None = None) -> None:
     response = c.put(f"{GROUP}/epochs/{epoch}", headers=auth("alice"),
-                     json={"member_user_ids": members})
+                     json={"member_user_ids": members, "invitation_id": str(invitation_id) if invitation_id else None})
     assert response.status_code == 200
 
 
@@ -61,7 +63,7 @@ def test_routes_authentication_and_validation(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("engine", ["sqlite", "postgres"], indirect=True)
-def test_upload_retries_preserve_bytes_and_counter(client: TestClient, engine: Engine) -> None:
+def test_upload_retries_preserve_bytes_and_counter(client: TestClient, engine: Engine, bob: ClientUser) -> None:
     setup_group(client)
     headers = auth("alice")
     path = f"{MESSAGES}/{FIRST}"
@@ -70,7 +72,7 @@ def test_upload_retries_preserve_bytes_and_counter(client: TestClient, engine: E
         response = client.put(path, headers=headers, json=packet())
         assert response.status_code == 200
         assert response.json() == receipt
-    publish(client, 1, ["alice", "bob"])
+    publish(client, 1, ["alice", "bob"], claimed_invitation(client, "demo", bob))
     for changed in (packet(1), packet() | {"ciphertext": "YQ=="},
                     packet() | {"encrypted_sender_data": "YQ=="}):
         assert client.put(path, headers=headers, json=changed).status_code == 409
@@ -86,12 +88,12 @@ def test_upload_retries_preserve_bytes_and_counter(client: TestClient, engine: E
 
 
 @pytest.mark.parametrize("engine", ["sqlite", "postgres"], indirect=True)
-def test_current_and_historical_access_and_group_scope(client: TestClient) -> None:
+def test_current_and_historical_access_and_group_scope(client: TestClient, bob: ClientUser) -> None:
     setup_group(client)
     alice_headers, bob_headers = auth("alice"), auth("bob")
     second = uuid4()
     assert client.put(f"{MESSAGES}/{FIRST}", headers=alice_headers, json=packet()).status_code == 200
-    publish(client, 1, ["alice", "bob"])
+    publish(client, 1, ["alice", "bob"], claimed_invitation(client, "demo", bob))
     assert client.put(f"{MESSAGES}/{second}", headers=alice_headers, json=packet(1)).status_code == 200
     assert client.get(MESSAGES, headers=bob_headers).json() == [
         {"transcript_index": 2, "message_id": str(second), "epoch": 1}

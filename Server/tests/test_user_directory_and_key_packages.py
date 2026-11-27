@@ -1,10 +1,8 @@
 import os
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Barrier
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -20,7 +18,7 @@ from Security.services.group_services.key_services.key_package_service import Ke
 from Server.core import dependencies
 from Server.core.database import Base
 from Server.main import app
-from Server.models import ApiCredential, PackageClaim, User
+from Server.models import ApiCredential, KeyPackage, User
 from Server.models.api_credential import digest_api_token
 from Server.schemas.public_key_package import PublicKeyPackagePayload, encode_binary
 
@@ -126,14 +124,6 @@ def publish(c: TestClient, package: PublicKeyPackage, owner: str = "bob") -> int
     ).status_code
 
 
-def claim(c: TestClient, request_id: UUID, invitee: str = "bob"):
-    return c.post(
-        f"/api/users/{invitee}/key-packages/claims",
-        headers=auth("alice"),
-        json={"request_id": str(request_id)},
-    )
-
-
 def test_discovery_and_access(client: TestClient, alice: ClientUser, bob: ClientUser) -> None:
     register(client, "bob")
     register(client, "alice")
@@ -201,21 +191,8 @@ def test_directory_round_trip_and_retries(
 
     assert publish(client, first) == publish(client, first) == 200
 
-    req = uuid4()
-    response = claim(client, req)
-    assert response.status_code == 200
-
-    payload = PublicKeyPackagePayload.model_validate_json(response.content)
-    assert payload == PublicKeyPackagePayload.model_validate(first, from_attributes=True)
-    assert first.package_id in bob.private_packages
-
-    assert publish(client, first) == 200
-    assert claim(client, uuid4()).status_code == 409
-    assert claim(client, uuid4(), "unknown").status_code == 404
-
     assert publish(client, second) == 200
-    assert claim(client, req).json() == response.json()
-    assert claim(client, req, "alice").status_code == 409
+    assert first.package_id in bob.private_packages
 
     changed = replace(second, package_id=first.package_id)
     assert publish(
@@ -230,46 +207,8 @@ def test_directory_round_trip_and_retries(
     assert publish(client, signed, "alice") == 409
 
     with Session(engine) as db:
-        assert db.scalar(select(func.count()).select_from(PackageClaim)) == 1
-
-
-@pytest.mark.parametrize("engine", ["postgres"], indirect=True)
-@pytest.mark.parametrize("scenario", ["different-requests", "retry", "different-invitees"])
-def test_simultaneous_claims(
-    client: TestClient,
-    alice: ClientUser,
-    bob: ClientUser,
-    engine: Engine,
-    scenario: str,
-) -> None:
-    register(client, "alice")
-    register(client, "bob")
-    package, = KeyPackageService().generate_packages(bob, b"bob", 1)
-    assert publish(client, package) == 200
-
-    first_id = uuid4()
-    second_id = uuid4() if scenario == "different-requests" else first_id
-    second_target = "bob"
-    if scenario == "different-invitees":
-        second_target = "alice"
-        other, = KeyPackageService().generate_packages(alice, b"alice", 1)
-        assert publish(client, other, "alice") == 200
-
-    gate = Barrier(2)
-
-    def send(request_id: UUID, invitee: str):
-        _ = gate.wait(timeout=5)
-        return claim(client, request_id, invitee)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        a = pool.submit(send, first_id, "bob")
-        b = pool.submit(send, second_id, second_target)
-        results = [a.result(), b.result()]
-
-    expected = [200, 200] if scenario == "retry" else [200, 409]
-    assert sorted(r.status_code for r in results) == expected
-    if scenario == "retry":
-        assert results[0].json() == results[1].json()
-
-    with Session(engine) as db:
-        assert db.scalar(select(func.count()).select_from(PackageClaim)) == 1
+        assert db.scalar(select(func.count()).select_from(KeyPackage)) == 2
+        stored = db.get_one(KeyPackage, first.package_id)
+        assert PublicKeyPackagePayload.model_validate(stored, from_attributes=True) == (
+            PublicKeyPackagePayload.model_validate(first, from_attributes=True)
+        )

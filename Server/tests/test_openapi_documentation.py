@@ -25,12 +25,18 @@ def test_swagger_and_openapi_contract() -> None:
         (users + "/{user_id}", "put"): ("Users", {403, 404, 422}),
         (users, "get"): ("Users", set[int]()),
         (users + "/{user_id}/key-packages/{package_id}", "put"): ("Users", {403, 404, 409, 422}),
-        (users + "/{user_id}/key-packages/claims", "post"): ("Users", {404, 409, 422}),
         (group, "put"): ("Groups", {403, 409, 422}),
         (group + "/epochs/{epoch}", "put"): ("Groups", {403, 404, 409, 422}),
         (group + "/messages", "get"): ("Messages", {403, 404}),
         (archive, "put"): ("Messages", {403, 404, 409, 422}),
         (archive, "get"): ("Messages", {403, 404, 422}),
+    }
+    invitations = {
+        (group + "/invitations", "post"): ("201", {200, 403, 404, 409, 422, 429}),
+        ("/api/invitations", "get"): ("200", {422}),
+        ("/api/invitations/{invitation_id}", "get"): ("200", {404, 422}),
+        ("/api/invitations/{invitation_id}/decision", "put"): ("200", {404, 409, 422}),
+        ("/api/invitations/{invitation_id}/claim", "post"): ("200", {404, 409, 422}),
     }
     public = {
         "/api/registration-challenges": {"201", "404", "422", "429"},
@@ -44,21 +50,23 @@ def test_swagger_and_openapi_contract() -> None:
 
     paths = cast(dict[str, dict[str, Operation]], schema.json()["paths"])
     assert {(path, method) for path, item in paths.items() for method in item} == (
-        set(expected) | {(path, "post") for path in public}
+        set(expected) | set(invitations) | {(path, "post") for path in public}
     )
     for path, statuses in public.items():
         op = paths[path]["post"]
         assert op["tags"] == ["Registration"]
         assert "security" not in op
         assert statuses <= op["responses"].keys()
-    for (path, method), (tag, errors) in expected.items():
+    protected = {route: (tag, "200", errors) for route, (tag, errors) in expected.items()}
+    protected.update({route: ("Invitations", code, errors) for route, (code, errors) in invitations.items()})
+    for (path, method), (tag, code, errors) in protected.items():
         op = paths[path][method]
         assert op["tags"] == [tag]
         assert len(op["security"]) == 1
         (scheme,) = op["security"][0]
         assert schema.json()["components"]["securitySchemes"][scheme]["type"] == "http"
         assert schema.json()["components"]["securitySchemes"][scheme]["scheme"] == "bearer"
-        assert {str(code) for code in errors | {200, 401}} <= op["responses"].keys()
+        assert ({code, "401"} | {str(error) for error in errors}) <= op["responses"].keys()
 
     for method, model in (("put", "ArchiveReceipt"), ("get", "ArchivedMessageResponse")):
         param = next(p["schema"] for p in paths[archive][method]["parameters"] if p["name"] == "message_ref")

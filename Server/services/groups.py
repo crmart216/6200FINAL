@@ -1,8 +1,10 @@
+from uuid import UUID
+
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from ..models import ChatGroup, EpochMember, GroupEpoch, User
+from ..models import ChatGroup, EpochMember, GroupEpoch, GroupInvitation, User
 from ..schemas.epoch_roster_update import EpochRosterResponse
 from ..schemas.group_registration import GroupResponse
 
@@ -82,6 +84,7 @@ def publish(
     epoch: int,
     caller: str,
     members: list[str],
+    invitation_id: UUID | None = None,
 ) -> EpochRosterResponse:
     ordered = sorted(members)
 
@@ -95,8 +98,16 @@ def publish(
         if db.get(GroupEpoch, (group_id, epoch)) is not None:
             if ordered != roster(db, group_id, epoch):
                 raise Conflict("Published epoch has a different roster")
+            completed = db.scalar(select(GroupInvitation.invitation_id).where(
+                GroupInvitation.group_id == group_id,
+                GroupInvitation.joined_epoch == epoch,
+                GroupInvitation.status == "completed",
+            ))
+            if invitation_id != completed:
+                raise Conflict("Published epoch has a different invitation")
         else:
-            if epoch != current_epoch(db, group_id) + 1:
+            previous_epoch = current_epoch(db, group_id)
+            if epoch != previous_epoch + 1:
                 raise Conflict("Publish the next consecutive epoch")
             if caller not in members:
                 raise InvalidRoster("Roster must retain the founder")
@@ -107,7 +118,29 @@ def publish(
             if registered != set(members):
                 raise InvalidRoster("Roster contains an unregistered user")
 
+            added = set(members).difference(roster(db, group_id, previous_epoch))
+            if len(added) > 1:
+                raise Conflict("An epoch can add only one invited member")
+
+            invitation = None
+            if added:
+                if invitation_id is None:
+                    raise Conflict("Adding a member requires a claimed invitation")
+                # Operations needing both locks always acquire the group first.
+                invitation = db.get(GroupInvitation, invitation_id, with_for_update=True)
+                if (
+                    invitation is None or invitation.status != "claimed"
+                    or invitation.group_id != group_id or invitation.inviter_user_id != caller
+                    or invitation.invitee_user_id not in added
+                ):
+                    raise Conflict("Invitation does not match this member addition")
+            elif invitation_id is not None:
+                raise Conflict("This epoch does not add an invited member")
+
             store_epoch(db, group_id, epoch, ordered)
+            if invitation is not None:
+                invitation.status = "completed"
+                invitation.joined_epoch = epoch
 
         return EpochRosterResponse(
             group_id=group_id,

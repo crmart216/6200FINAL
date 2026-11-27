@@ -34,12 +34,11 @@ def group_errors() -> Generator[None, None, None]:
 @router.put("/{group_id}", summary="Register a group at epoch zero",
             responses={403: {"description": "Register the caller first"},
                         409: {"description": "Group ID has a different founder or name"}})
-
 def register(
-    group_id: GroupId, 
-    data: GroupRegistration, 
+    group_id: GroupId,
+    data: GroupRegistration,
     caller: Caller,
-    db: Database
+    db: Database,
 ) -> GroupResponse:
     """The caller becomes the founder. Retrying the same ID and name returns the current epoch."""
     with group_errors():
@@ -49,18 +48,21 @@ def register(
 @router.put("/{group_id}/epochs/{epoch}", summary="Publish a complete epoch roster",
             responses={403: {"description": "Only the founder can publish"},
                         404: {"description": "Unknown group"},
-                        409: {"description": "Skipped epoch or conflicting published roster"},
+                        409: {"description": "Skipped epoch, conflicting roster, or missing or mismatched invitation"},
                         422: {"description": "Invalid epoch, unknown or duplicate member, or missing founder"}})
-
 def publish(
-    group_id: GroupId, 
-    epoch: Epoch, 
+    group_id: GroupId,
+    epoch: Epoch,
     data: EpochRosterUpdate,
-    caller: Caller, 
-    db: Database
+    caller: Caller,
+    db: Database,
 ) -> EpochRosterResponse:
-    """Publish consecutive epochs with all member IDs, including the founder. An identical
-    roster in any order succeeds on retry, including for an earlier epoch.
+    """Publish consecutive epochs with all member IDs, including the founder.
+
+    Include the claimed invitation ID when adding a member. Rotation and removal need no
+    invitation. Retry with the original roster and invitation ID.
     """
     with group_errors():
-        return groups.publish(db, group_id, epoch, caller.user_id, data.member_user_ids)
+        return groups.publish(
+            db, group_id, epoch, caller.user_id, data.member_user_ids, data.invitation_id,
+        )

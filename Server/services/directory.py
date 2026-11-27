@@ -1,6 +1,4 @@
-from uuid import UUID
-
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -11,7 +9,7 @@ from Security.services.group_services.key_services.key_package_service import (
 )
 
 from Server.core.dependencies import CurrentIdentity
-from ..models import KeyPackage, PackageClaim, User
+from ..models import KeyPackage, User
 from ..schemas.public_key_package import PublicKeyPackagePayload
 from ..schemas.user_registration import UserRegistration
 from ..schemas.user_response import UserResponse
@@ -48,6 +46,21 @@ def discover(db: Session) -> list[UserResponse]:
     return [UserResponse.model_validate(row, from_attributes=True) for row in rows]
 
 
+def verify_package(user_id: str, signing_key: bytes, payload: PublicKeyPackagePayload) -> None:
+    package = PublicKeyPackage(
+        payload.package_id,
+        payload.credential,
+        payload.init_public_key,
+        payload.leaf_public_key,
+        payload.signing_public_key,
+        payload.signature,
+    )
+    expected = TrustedIdentity(user_id.encode("utf-8"), signing_key)
+
+    if not KeyPackageService().verify_package(package, expected):
+        raise InvalidPackage("Package failed identity or signature verification")
+
+
 def publish(
     db: Session,
     caller: CurrentIdentity,
@@ -57,22 +70,11 @@ def publish(
     if package_id != payload.package_id:
         raise InvalidPackage("Package ID differs from the path")
 
-    package = PublicKeyPackage(
-        payload.package_id,
-        payload.credential,
-        payload.init_public_key,
-        payload.leaf_public_key,
-        payload.signing_public_key,
-        payload.signature,
-    )
-    expected = TrustedIdentity(caller.user_id.encode("utf-8"), caller.signing_public_key)
-
     with db.begin():
         if db.get(User, caller.user_id) is None:
             raise UnknownUser("Publisher is not registered")
 
-        if not KeyPackageService().verify_package(package, expected):
-            raise InvalidPackage("Package failed identity or signature verification")
+        verify_package(caller.user_id, caller.signing_public_key, payload)
 
         stmt = insert(KeyPackage).values(
             owner_user_id=caller.user_id,
@@ -89,87 +91,3 @@ def publish(
             raise Conflict("Package ID is already in use")
 
     return payload
-
-
-def prior_claim(
-    db: Session,
-    inviter: str,
-    request_id: UUID,
-    invitee: str,
-) -> PublicKeyPackagePayload | None:
-    row = db.scalar(
-        select(KeyPackage)
-        .join(PackageClaim)
-        .where(
-            PackageClaim.inviter_user_id == inviter,
-            PackageClaim.request_id == request_id,
-        )
-    )
-
-    if row is None:
-        return None
-    if row.owner_user_id != invitee:
-        raise Conflict("Request ID already used for another invitee")
-
-    return PublicKeyPackagePayload.model_validate(row, from_attributes=True)
-
-
-def claim(
-    db: Session,
-    inviter: str,
-    invitee: str,
-    request_id: UUID,
-) -> PublicKeyPackagePayload:
-    with db.begin():
-        prior = prior_claim(db, inviter, request_id, invitee)
-        if prior is not None:
-            return prior
-
-        if db.get(User, inviter) is None:
-            raise UnknownUser("Inviter is not registered")
-
-        # On PostgreSQL this emits FOR NO KEY UPDATE. Claimants for the same
-        # invitee serialize while foreign-key checks can still reference the user.
-        lock = (
-            select(User.user_id)
-            .where(User.user_id == invitee)
-            .with_for_update(key_share=True)
-        )
-        if db.scalar(lock) is None:
-            raise UnknownUser("Invitee is not registered")
-
-        prior = prior_claim(db, inviter, request_id, invitee)
-        if prior is not None:
-            return prior
-
-        taken = exists().where(PackageClaim.package_id == KeyPackage.package_id)
-        row = db.scalar(
-            select(KeyPackage)
-            .where(KeyPackage.owner_user_id == invitee, ~taken)
-            .order_by(KeyPackage.package_id)
-            .limit(1)
-        )
-        if row is None:
-            raise Conflict("No available package")
-
-        stmt = (
-            insert(PackageClaim)
-            .values(
-                package_id=row.package_id,
-                inviter_user_id=inviter,
-                request_id=request_id,
-            )
-            .on_conflict_do_nothing(
-                index_elements=[PackageClaim.inviter_user_id, PackageClaim.request_id]
-            )
-            .returning(PackageClaim.package_id)
-        )
-
-        if db.scalar(stmt) is None:
-            # Another transaction committed this inviter/request pair first.
-            prior = prior_claim(db, inviter, request_id, invitee)
-            if prior is None:
-                raise Conflict("Claim could not be resolved")
-            return prior
-
-        return PublicKeyPackagePayload.model_validate(row, from_attributes=True)

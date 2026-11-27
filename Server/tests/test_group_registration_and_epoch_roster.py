@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from httpx2 import Response
 from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session
 
+from Security.models.user import User as ClientUser
 from Server.models import ChatGroup, EpochMember, GroupEpoch
 from .test_user_directory_and_key_packages import (
     alice as alice,
@@ -17,6 +19,7 @@ from .test_user_directory_and_key_packages import (
     engine as engine,
     register,
 )
+from .test_group_invitations import claimed_invitation
 
 
 URL = "/api/groups/demo"
@@ -31,11 +34,12 @@ def publish(
     epoch: int,
     members: list[str],
     user: str = "alice",
+    invitation_id: UUID | None = None,
 ) -> Response:
     return c.put(
         f"{URL}/epochs/{epoch}",
         headers=auth(user),
-        json={"member_user_ids": members},
+        json={"member_user_ids": members, "invitation_id": str(invitation_id) if invitation_id else None},
     )
 
 
@@ -46,14 +50,13 @@ def snapshots(engine: Engine) -> dict[int, list[str]]:
         )
         result: dict[int, list[str]] = {epoch: [] for epoch in epochs}
 
-        members = db.scalars(
+        rows = db.scalars(
             select(EpochMember)
             .where(EpochMember.group_id == "demo")
             .order_by(EpochMember.user_id)
         )
-        for member in members:
+        for member in rows:
             result[member.epoch].append(member.user_id)
-
         return result
 
 
@@ -82,7 +85,7 @@ def test_routes_and_authorization(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("engine", ["sqlite", "postgres"], indirect=True)
-def test_epoch_history_and_retries(client: TestClient, engine: Engine) -> None:
+def test_epoch_history_and_retries(client: TestClient, engine: Engine, bob: ClientUser) -> None:
     register(client, "alice")
     register(client, "bob")
     group = {
@@ -109,8 +112,9 @@ def test_epoch_history_and_retries(client: TestClient, engine: Engine) -> None:
         2: ["alice", "bob"],
         3: ["alice"],
     }
+    invitation_id = claimed_invitation(client, "demo", bob)
     for epoch, members in history.items():
-        response = publish(client, epoch, members)
+        response = publish(client, epoch, members, invitation_id=invitation_id if epoch == 1 else None)
         assert response.status_code == 200
         assert response.json() == {
             "group_id": "demo",
@@ -119,7 +123,7 @@ def test_epoch_history_and_retries(client: TestClient, engine: Engine) -> None:
         }
         assert create(client).json() == group | {"current_epoch": epoch}
 
-    assert publish(client, 1, ["bob", "alice"]).json() == {
+    assert publish(client, 1, ["bob", "alice"], invitation_id=invitation_id).json() == {
         "group_id": "demo",
         "epoch": 1,
         "member_user_ids": ["alice", "bob"],
@@ -167,7 +171,7 @@ def race(operation: Callable[[int], Response]) -> list[Response]:
 @pytest.mark.parametrize("engine", ["postgres"], indirect=True)
 @pytest.mark.parametrize("identical", [True, False], ids=["identical", "conflicting"])
 def test_competing_writes(
-    client: TestClient, engine: Engine, identical: bool
+    client: TestClient, engine: Engine, identical: bool, bob: ClientUser
 ) -> None:
     register(client, "alice")
     register(client, "bob")
@@ -180,7 +184,10 @@ def test_competing_writes(
     assert snapshots(engine) == {0: ["alice"]}
 
     rosters = [["alice", "bob"], ["bob", "alice"] if identical else ["alice"]]
-    published = race(lambda i: publish(client, 1, rosters[i]))
+    invitation_id = claimed_invitation(client, "demo", bob)
+    published = race(lambda i: publish(
+        client, 1, rosters[i], invitation_id=invitation_id if "bob" in rosters[i] else None,
+    ))
     assert sorted(r.status_code for r in published) == expected
 
     winner = next(i for i, response in enumerate(published) if response.status_code == 200)
