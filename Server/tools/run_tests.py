@@ -1,20 +1,27 @@
+import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from psycopg import Error
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError
+from typing import TYPE_CHECKING
 
-from Server.core.config import get_settings
+if TYPE_CHECKING:
+    from sqlalchemy.engine import URL
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE = "chat_demo_migration_test"
 
 
-def test_database_url() -> URL:
+def test_database_url() -> "URL":
+    from psycopg import Error
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import DBAPIError
+
+    from Server.core.config import get_settings
+
     configured = os.getenv("SERVER_MIGRATION_TEST_URL")
     demo = make_url(get_settings().database_url.get_secret_value())
     target = make_url(configured) if configured else demo.set(database=TEST_DATABASE)
@@ -68,7 +75,7 @@ def test_database_url() -> URL:
     return target
 
 
-def main() -> int:
+def run_pytest() -> int:
     target = test_database_url()
     env = os.environ.copy()
     env["SERVER_MIGRATION_TEST_URL"] = target.render_as_string(hide_password=False)
@@ -76,12 +83,68 @@ def main() -> int:
     _ = env.pop("POSTGRES_PASSWORD", None)
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-ra", "Server/tests"],
-        cwd=Path(__file__).resolve().parents[2],
+        [sys.executable, "-m", "pytest", "-vv", "-ra", "--capture=tee-sys", "Server/tests"],
+        cwd=PROJECT_ROOT,
         env=env,
         check=False,
     )
     return result.returncode
+
+
+def run_in_compose(use_sudo: bool) -> int:
+    compose = ["sudo", "docker", "compose"] if use_sudo else ["docker", "compose"]
+
+    try:
+        _ = subprocess.run(
+            [*compose, "up", "-d", "--wait", "db"], cwd=PROJECT_ROOT, check=True,
+        )
+        password = subprocess.run(
+            [*compose, "exec", "-T", "db", "sh", "-ec", 'printf "%s\n" "$POSTGRES_PASSWORD"'],
+            cwd=PROJECT_ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        result = subprocess.run(
+            [
+                *compose, "run", "--build", "--rm", "--no-deps", "-T",
+                "--user", f"{os.getuid()}:{os.getgid()}",
+                "--volume", f"{PROJECT_ROOT}:/workspace:ro",
+                "--workdir", "/workspace",
+                "api", "sh", "-ec",
+                """IFS= read -r POSTGRES_PASSWORD
+export POSTGRES_PASSWORD PYTHONDONTWRITEBYTECODE=1
+python -m venv /tmp/server-test-venv
+/tmp/server-test-venv/bin/python -m pip install --no-cache-dir -r Server/requirements-dev.txt
+exec /tmp/server-test-venv/bin/python -m Server.tools.run_tests --inside-container
+""",
+            ],
+            cwd=PROJECT_ROOT,
+            input=password,
+            check=False,
+        )
+        return result.returncode
+    except FileNotFoundError:
+        print("Unable to launch Docker Compose. Check that Docker is installed.", file=sys.stderr)
+        return 127
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+
+class TestOptions(argparse.Namespace):
+    sudo: bool = False
+    inside_container: bool = False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run the server tests using Docker Compose.")
+    _ = parser.add_argument("--sudo", action="store_true", help="Run Docker Compose with sudo.")
+    _ = parser.add_argument("--inside-container", action="store_true", help=argparse.SUPPRESS)
+    args = TestOptions()
+    _ = parser.parse_args(namespace=args)
+
+    if args.inside_container:
+        return run_pytest()
+    return run_in_compose(args.sudo)
 
 
 if __name__ == "__main__":

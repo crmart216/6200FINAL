@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -57,6 +58,25 @@ COLUMNS = {
         "encrypted_sender_data": "BYTEA",
         "ciphertext": "BYTEA",
     },
+    "registration_challenges": {
+        "challenge_id": "UUID", "user_id": "TEXT", "signing_public_key": "BYTEA",
+        "nonce": "BYTEA", "created_at": "TIMESTAMP WITH TIME ZONE",
+        "expires_at": "TIMESTAMP WITH TIME ZONE", "consumed_at": "TIMESTAMP WITH TIME ZONE",
+    },
+    "api_credentials": {
+        "user_id": "TEXT", "token_digest": "BYTEA", "created_at": "TIMESTAMP WITH TIME ZONE",
+    },
+    "group_invitations": {
+        "invitation_id": "UUID", "group_id": "TEXT", "inviter_user_id": "TEXT",
+        "invitee_user_id": "TEXT", "status": "TEXT", "package_id": "TEXT",
+        "created_at": "TIMESTAMP WITH TIME ZONE", "expires_at": "TIMESTAMP WITH TIME ZONE",
+        "claimed_at": "TIMESTAMP WITH TIME ZONE", "joined_epoch": "BIGINT",
+    },
+}
+
+NULLABLE = {
+    "registration_challenges": {"consumed_at"},
+    "group_invitations": {"package_id", "claimed_at", "joined_epoch"},
 }
 
 PRIMARY_KEYS = {
@@ -67,6 +87,9 @@ PRIMARY_KEYS = {
     "group_epochs": ("group_id", "epoch"),
     "epoch_members": ("group_id", "epoch", "user_id"),
     "messages": ("group_id", "message_id"),
+    "registration_challenges": ("challenge_id",),
+    "api_credentials": ("user_id",),
+    "group_invitations": ("invitation_id",),
 }
 
 EPOCH_REFERENCE = (
@@ -94,6 +117,15 @@ FOREIGN_KEYS: dict[str, set[tuple[tuple[str, str], ...]]] = {
         (("user_id", "users.user_id"),),
     },
     "messages": {EPOCH_REFERENCE},
+    "registration_challenges": set(),
+    "api_credentials": {(("user_id", "users.user_id"),)},
+    "group_invitations": {
+        (("group_id", "chat_groups.group_id"),),
+        (("inviter_user_id", "users.user_id"),),
+        (("invitee_user_id", "users.user_id"),),
+        (("package_id", "key_packages.package_id"),),
+        (("group_id", "group_epochs.group_id"), ("joined_epoch", "group_epochs.epoch")),
+    },
 }
 
 
@@ -108,6 +140,9 @@ def test_all_models_use_shared_metadata() -> None:
         models.GroupEpoch,
         models.EpochMember,
         models.Message,
+        models.RegistrationChallenge,
+        models.ApiCredential,
+        models.GroupInvitation,
     )
     for cls in classes:
         assert cls.__table__ is Base.metadata.tables[cls.__tablename__]
@@ -119,13 +154,16 @@ def test_required_columns_and_postgresql_types(name: str) -> None:
     ddl = str(CreateTable(table).compile(dialect=dialect()))
     assert set(table.columns.keys()) == set(COLUMNS[name])
 
-    python_types = {"TEXT": str, "BYTEA": bytes, "BIGINT": int, "UUID": UUID}
+    python_types = {
+        "TEXT": str, "BYTEA": bytes, "BIGINT": int, "UUID": UUID,
+        "TIMESTAMP WITH TIME ZONE": datetime,
+    }
     for column_name, sql_type in COLUMNS[name].items():
         column = table.c[column_name]
-        assert column.nullable is False
+        assert column.nullable == (column_name in NULLABLE.get(name, set()))
         assert column.type.python_type is python_types[sql_type]
         assert column.type.compile(dialect=dialect()) == sql_type
-        assert f"{column_name} {sql_type} " in ddl
+        assert f"{column_name} {sql_type}" in ddl
 
 
 @pytest.mark.parametrize("name", PRIMARY_KEYS)
@@ -193,7 +231,7 @@ with patch("psycopg.connect", side_effect=AssertionError("Unexpected DB connecti
     import Server.models
     from Server.core.database import Base
 
-    assert len(Base.metadata.tables) == 7
+    assert len(Base.metadata.tables) == 10
     for table in Base.metadata.sorted_tables:
         assert "CREATE TABLE" in str(CreateTable(table).compile(dialect=dialect()))
 """
