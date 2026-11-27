@@ -19,17 +19,22 @@ class BackfillConflict(Exception):
 class BackfillCounts:
     inserted: int
     unchanged: int
-    skipped: int
+    skipped_user_ids: tuple[str, ...] = ()
+
+    @property
+    def skipped(self) -> int:
+        return len(self.skipped_user_ids)
 
 
 def backfill(db: Session, identities: Iterable[DemoIdentity]) -> BackfillCounts:
-    inserted = unchanged = skipped = 0
+    inserted = unchanged = 0
+    skipped: list[str] = []
     with db.begin():
         for identity in sorted(identities, key=lambda item: item.user_id):
             user_id = identity.user_id
             user = db.get(User, user_id, with_for_update=True)
             if user is None:
-                skipped += 1
+                skipped.append(user_id)
                 continue
             if user.signing_public_key != identity.signing_public_key:
                 raise BackfillConflict(f"Signing key mismatch for user {user_id!r}")
@@ -52,7 +57,7 @@ def backfill(db: Session, identities: Iterable[DemoIdentity]) -> BackfillCounts:
                 raise BackfillConflict(f"Existing credential differs for user {user_id!r}")
             unchanged += 1
 
-    return BackfillCounts(inserted, unchanged, skipped)
+    return BackfillCounts(inserted, unchanged, tuple(skipped))
 
 
 def main() -> None:
@@ -68,6 +73,8 @@ def main() -> None:
         raise SystemExit("Backfill failed. Check database connectivity and migration status.") from None
 
     print(f"Inserted {counts.inserted}, unchanged {counts.unchanged}, skipped {counts.skipped}")
+    for user_id in counts.skipped_user_ids:
+        print(f"Skipped user {user_id!r}: no existing account")
 
 
 if __name__ == "__main__":

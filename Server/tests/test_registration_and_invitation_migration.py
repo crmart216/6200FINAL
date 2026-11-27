@@ -172,8 +172,8 @@ def test_backfill_insert_skip_and_retry(migrated: Engine) -> None:
     token = " test-☃ "
     identities = [identity("alice", token), identity("missing", "unused")]
     with Session(migrated) as db:
-        assert backfill(db, identities) == BackfillCounts(1, 0, 1)
-        assert backfill(db, identities) == BackfillCounts(0, 1, 1)
+        assert backfill(db, identities) == BackfillCounts(1, 0, ("missing",))
+        assert backfill(db, identities) == BackfillCounts(0, 1, ("missing",))
         rows = list(db.scalars(select(ApiCredential)))
         assert [(row.user_id, row.token_digest) for row in rows] == [
             ("alice", sha256(token.encode("utf-8")).digest())

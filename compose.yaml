@@ -5,7 +5,8 @@ x-server: &server
   image: ${COMPOSE_PROJECT_NAME:-chat6200}-server:local
   environment:
     SERVER_DATABASE_URL: postgresql+psycopg://chat_demo_app:${CHAT_APP_PASSWORD:?Set a URL-safe application password}@db:5432/chat_demo
-    SERVER_DEMO_IDENTITIES: ${SERVER_DEMO_IDENTITIES:?Set the JSON identity list}
+    SERVER_DEMO_IDENTITIES: ${SERVER_DEMO_IDENTITIES:-[]}
+    SERVER_PUBLIC_SIGNUP_ENABLED: ${SERVER_PUBLIC_SIGNUP_ENABLED:-false}
 
 services:
   db:

@@ -13,10 +13,15 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine
+from sqlalchemy.orm import sessionmaker
 
+from Server.core import dependencies
 from Server.core.config import get_settings
 from Server.core.database import get_engine, get_session_factory
 from Server.core.dependencies import CurrentIdentity, get_current_identity, get_db
+
+from .test_user_directory_and_key_packages import engine as engine, seed_account
 
 
 def clear_caches() -> None:
@@ -161,7 +166,15 @@ def test_failed_request_rolls_back_closes_and_propagates(session_events: list[st
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(
+    engine: Engine, identities: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    factory = sessionmaker(engine)
+    with factory.begin() as db:
+        for row in identities:
+            seed_account(db, row["user_id"], base64.b64decode(row["signing_public_key_b64"]),
+                         row["api_token"])
+    monkeypatch.setattr(dependencies, "get_session_factory", lambda: factory)
     app = FastAPI()
 
     @app.get("/whoami")

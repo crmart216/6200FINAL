@@ -1,5 +1,3 @@
-from sqlalchemy.sql.selectable import Select
-
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,7 +45,7 @@ def upload(
         return ArchiveReceipt.model_validate(message, from_attributes=True)
 
 
-def readable_messages(db: Session, group_id: str, caller: str) -> Select[Message]:
+def readable_messages(db: Session, group_id: str, caller: str):
     # A shared lock keeps the current roster stable until the read completes.
     if db.get(ChatGroup, group_id, with_for_update={"read": True}) is None:
         raise ArchiveNotFound("Unknown group")

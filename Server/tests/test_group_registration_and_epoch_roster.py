@@ -46,13 +46,14 @@ def snapshots(engine: Engine) -> dict[int, list[str]]:
         )
         result: dict[int, list[str]] = {epoch: [] for epoch in epochs}
 
-        rows = db.execute(
-            select(EpochMember.epoch, EpochMember.user_id)
+        members = db.scalars(
+            select(EpochMember)
             .where(EpochMember.group_id == "demo")
             .order_by(EpochMember.user_id)
         )
-        for epoch, member in rows:
-            result[epoch].append(member)
+        for member in members:
+            result[member.epoch].append(member.user_id)
+
         return result
 
 
@@ -69,7 +70,6 @@ def test_routes_and_authorization(client: TestClient) -> None:
             URL + "/epochs/1", headers=headers, json={"member_user_ids": ["alice"]}
         ).status_code == 401
 
-    assert create(client).status_code == 403
     register(client, "alice")
     register(client, "bob")
 

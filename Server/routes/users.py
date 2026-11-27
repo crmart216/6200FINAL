@@ -39,18 +39,17 @@ def directory_errors() -> Generator[None, None, None]:
         raise HTTPException(422, str(exc)) from exc
 
 
-@router.put("/{user_id}", summary="Register or refresh your directory entry",
-            responses={403: {"description": "Caller does not own this user ID"}})
-
-def register(
-    user_id: str, 
-    data: RegistrationBody, 
-    caller: Caller, 
-    db: Database
-) -> UserResponse:
-    """Register your own ID or refresh its name and peer listener address."""
+@router.put(
+    "/{user_id}",
+    summary="Update your directory profile",
+    responses={403: {"description": "Caller does not own this user ID"},
+               404: {"description": "User is not registered"}},
+)
+def update_profile(user_id: str, data: RegistrationBody, caller: Caller, db: Database) -> UserResponse:
+    """Update your display name and listener URL. Your signing key stays pinned."""
     require_owner(caller, user_id)
-    return directory.register(db, caller, data)
+    with directory_errors():
+        return directory.update_profile(db, caller, data)
 
 
 @router.get("", summary="List registered peers in user ID order")

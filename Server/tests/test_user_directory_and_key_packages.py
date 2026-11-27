@@ -1,4 +1,3 @@
-import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -13,16 +12,16 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, func, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from Security.models.key_models.key_package import PublicKeyPackage
 from Security.models.user import User as ClientUser
 from Security.services.group_services.key_services.key_package_service import KeyPackageService
-from Server.core.config import get_settings
+from Server.core import dependencies
 from Server.core.database import Base
-from Server.core.dependencies import get_db
 from Server.main import app
-from Server.models import PackageClaim
+from Server.models import ApiCredential, PackageClaim, User
+from Server.models.api_credential import digest_api_token
 from Server.schemas.public_key_package import PublicKeyPackagePayload, encode_binary
 
 
@@ -86,30 +85,23 @@ def client(
     bob: ClientUser,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
-    identities = [
-        {
-            "user_id": u.user_id,
-            "api_token": "test-" + u.user_id,
-            "signing_public_key_b64": encode_binary(
-                u.signing_key.public_key().public_bytes_raw()
-            ),
-        }
-        for u in (alice, bob, ClientUser("eve", "Eve"))
-    ]
-    monkeypatch.setenv("SERVER_DEMO_IDENTITIES", json.dumps(identities))
-    monkeypatch.setenv("SERVER_DATABASE_URL", "postgresql+psycopg://unused/test")
-    get_settings.cache_clear()
+    factory = sessionmaker(engine)
+    with factory.begin() as db:
+        for account in (alice, bob):
+            seed_account(db, account.user_id, account.signing_key.public_key().public_bytes_raw(),
+                         "test-" + account.user_id)
+    monkeypatch.setattr(dependencies, "get_session_factory", lambda: factory)
+    with TestClient(app) as c:
+        yield c
 
-    def sessions() -> Iterator[Session]:
-        with Session(engine) as db:
-            yield db
 
-    monkeypatch.setitem(app.dependency_overrides, get_db, sessions)
-    try:
-        with TestClient(app) as c:
-            yield c
-    finally:
-        get_settings.cache_clear()
+def seed_account(db: Session, user_id: str, public_key: bytes, token: str) -> None:
+    db.add(User(
+        user_id=user_id, display_name=user_id.title(), websocket_url="ws://localhost:5555",
+        signing_public_key=public_key,
+    ))
+    db.flush()
+    db.add(ApiCredential(user_id=user_id, token_digest=digest_api_token(token)))
 
 
 def auth(user: str) -> dict[str, str]:
@@ -142,14 +134,16 @@ def claim(c: TestClient, request_id: UUID, invitee: str = "bob"):
     )
 
 
-def test_discovery_and_access(client: TestClient, bob: ClientUser) -> None:
+def test_discovery_and_access(client: TestClient, alice: ClientUser, bob: ClientUser) -> None:
     register(client, "bob")
     register(client, "alice")
     register(client, "bob", "wss://bob.local/chat")
 
     assert client.get("/api/users", headers=auth("alice")).json() == [
-        {"user_id": "alice", "display_name": "Alice", "websocket_url": "ws://localhost:5555"},
-        {"user_id": "bob", "display_name": "Bob", "websocket_url": "wss://bob.local/chat"},
+        {"user_id": "alice", "display_name": "Alice", "websocket_url": "ws://localhost:5555",
+         "signing_public_key_b64": encode_binary(alice.signing_key.public_key().public_bytes_raw())},
+        {"user_id": "bob", "display_name": "Bob", "websocket_url": "wss://bob.local/chat",
+         "signing_public_key_b64": encode_binary(bob.signing_key.public_key().public_bytes_raw())},
     ]
     assert client.get("/api/users").status_code == 401
     assert client.get("/api/users", headers=auth("unknown")).status_code == 401
@@ -177,7 +171,7 @@ def test_discovery_and_access(client: TestClient, bob: ClientUser) -> None:
 
 def test_package_validation(client: TestClient, bob: ClientUser) -> None:
     package, = KeyPackageService().generate_packages(bob, b"bob", 1)
-    assert publish(client, package) == 404
+    assert publish(client, package, "unregistered") == 401
 
     register(client, "bob")
     body = PublicKeyPackagePayload.model_validate(

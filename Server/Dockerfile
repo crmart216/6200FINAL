@@ -8,4 +8,4 @@ COPY Security/ Security/
 RUN chmod -R a+rX /app/Server /app/Security
 USER 10001:10001
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "Server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "Server.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

@@ -65,7 +65,8 @@ class Settings(BaseSettings):
     )
 
     database_url: SecretStr
-    demo_identities: tuple[DemoIdentity, ...]
+    demo_identities: tuple[DemoIdentity, ...] = ()
+    public_signup_enabled: bool = False
 
     @field_validator("database_url")
     @classmethod
@@ -97,4 +98,4 @@ def get_settings() -> Settings:
         pass
 
     # Raise outside the handler so the original inputs cannot enter a traceback.
-    raise ValueError("Invalid SERVER_DATABASE_URL or SERVER_DEMO_IDENTITIES")
+    raise ValueError("Invalid SERVER_DATABASE_URL, SERVER_DEMO_IDENTITIES, or SERVER_PUBLIC_SIGNUP_ENABLED")

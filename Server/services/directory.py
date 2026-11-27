@@ -29,25 +29,18 @@ class InvalidPackage(Exception):
     pass
 
 
-def register(
+def update_profile(
     db: Session,
     caller: CurrentIdentity,
     data: UserRegistration,
 ) -> UserResponse:
-    fields = data.model_dump()
-    fields["signing_public_key"] = caller.signing_public_key
-
     with db.begin():
-        stmt = insert(User).values(user_id=caller.user_id, **fields)
-        _ = db.execute(
-            stmt.on_conflict_do_update(index_elements=[User.user_id], set_=fields)
-        )
-
-    return UserResponse(
-        user_id=caller.user_id,
-        display_name=data.display_name,
-        websocket_url=data.websocket_url,
-    )
+        user = db.get(User, caller.user_id)
+        if user is None:
+            raise UnknownUser("User is not registered")
+        user.display_name = data.display_name
+        user.websocket_url = data.websocket_url
+        return UserResponse.model_validate(user, from_attributes=True)
 
 
 def discover(db: Session) -> list[UserResponse]:

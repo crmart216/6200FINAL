@@ -22,7 +22,7 @@ def test_swagger_and_openapi_contract() -> None:
     group = "/api/groups/{group_id}"
     archive = group + "/messages/{message_ref}"
     expected = {
-        (users + "/{user_id}", "put"): ("Users", {403, 422}),
+        (users + "/{user_id}", "put"): ("Users", {403, 404, 422}),
         (users, "get"): ("Users", set[int]()),
         (users + "/{user_id}/key-packages/{package_id}", "put"): ("Users", {403, 404, 409, 422}),
         (users + "/{user_id}/key-packages/claims", "post"): ("Users", {404, 409, 422}),
@@ -32,6 +32,10 @@ def test_swagger_and_openapi_contract() -> None:
         (archive, "put"): ("Messages", {403, 404, 409, 422}),
         (archive, "get"): ("Messages", {403, 404, 422}),
     }
+    public = {
+        "/api/registration-challenges": {"201", "404", "422", "429"},
+        "/api/registrations": {"201", "404", "409", "422", "429"},
+    }
     with TestClient(app) as client:
         docs = client.get("/docs")
         assert docs.status_code == 200 and "/openapi.json" in docs.text
@@ -39,7 +43,14 @@ def test_swagger_and_openapi_contract() -> None:
         assert schema.status_code == 200
 
     paths = cast(dict[str, dict[str, Operation]], schema.json()["paths"])
-    assert {(path, method) for path, item in paths.items() for method in item} == set(expected)
+    assert {(path, method) for path, item in paths.items() for method in item} == (
+        set(expected) | {(path, "post") for path in public}
+    )
+    for path, statuses in public.items():
+        op = paths[path]["post"]
+        assert op["tags"] == ["Registration"]
+        assert "security" not in op
+        assert statuses <= op["responses"].keys()
     for (path, method), (tag, errors) in expected.items():
         op = paths[path][method]
         assert op["tags"] == [tag]
