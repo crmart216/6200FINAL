@@ -4,7 +4,7 @@ from ..key_package import PublicKeyPackage
 
 @dataclass
 class Proposal:
-    """Describe one Add or Remove at a specific group epoch."""
+    """Describe one Add, Remove, or Rotate at a specific group epoch."""
 
     group_id: str
     epoch: int
@@ -16,7 +16,7 @@ class Proposal:
     def __post_init__(self) -> None:
         _ = self.require_payload()
 
-    def require_payload(self) -> PublicKeyPackage | int:
+    def require_payload(self) -> PublicKeyPackage | int | None:
         """Return the payload for this action or reject an invalid proposal."""
         if self.action == "add":
             if not isinstance(self.invitee, PublicKeyPackage):
@@ -33,6 +33,11 @@ class Proposal:
             if type(target) is not int or target < 0:
                 raise ValueError("A Remove proposal requires a nonnegative leaf index.")
             return target
+
+        if self.action == "rotate":
+            if self.invitee is not None or self.target_leaf_index is not None:
+                raise ValueError("A Rotate proposal cannot carry a membership payload.")
+            return None
 
         raise ValueError(f"Unknown proposal action: {self.action!r}.")
 

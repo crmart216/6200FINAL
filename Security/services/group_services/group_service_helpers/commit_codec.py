@@ -50,8 +50,9 @@ class CommitCodec:
             ]
         else:
             if invitee is not None:
-                raise ValueError("A Remove Commit cannot carry an invitee argument.")
-            payload_fields = [payload]
+                raise ValueError("Only an Add Commit can carry an invitee argument.")
+            # Rotate carries no membership payload; its action is signed below.
+            payload_fields = [] if payload is None else [payload]
 
         path = commit.update_path
         nodes = [

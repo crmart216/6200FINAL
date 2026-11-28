@@ -76,7 +76,23 @@ def main() -> None:
 
         readers = ", ".join(peer.display_name for peer in peers)
         print(f"{sender.display_name}: {text}  [decrypted by {readers}]")
+        count = founder.epoch_message_count
+        print(f"  Epoch {founder.epoch} message count: {count}")
+        if founder.rotation_due:
+            rotate()
         return packet
+
+    def rotate() -> None:
+        nonlocal founder
+        if not all(peer.groups[group_id].rotation_due for peer in members):
+            raise RuntimeError("Not all members have processed the epoch messages.")
+        previous_epoch = founder.epoch
+        result = groups.rotate_epoch(alice, founder)
+        deliver_commit(result.commit, [peer for peer in members if peer is not alice])
+        founder = alice.groups[group_id] = result.state
+        if not all(peer.groups[group_id].epoch == founder.epoch for peer in members):
+            raise RuntimeError("Members did not advance to the same epoch.")
+        announce(f"Automatic rotation: epoch {previous_epoch} -> {founder.epoch}")
 
     announce("Alice created the group")
 
@@ -95,6 +111,10 @@ def main() -> None:
     say(charlie, "I got your message, Eve.")
     say(bob, "Same here.")
     say(alice, "Thanks, Eve. That finishes your part.")
+    say(bob, "This is message five in this epoch.")
+    say(eve, "This is message six.")
+    say(charlie, "Message seven triggers our key rotation.")
+    say(alice, "Message eight uses the new epoch.")
 
     # Keep Eve's old state so the demo can check it against a new-epoch message.
     eve_state = eve.groups[group_id]
