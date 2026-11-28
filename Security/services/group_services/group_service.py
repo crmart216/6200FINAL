@@ -3,7 +3,6 @@ from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 from hmac import compare_digest, digest
-from json import dumps
 from secrets import token_bytes
 from uuid import uuid4
 
@@ -53,12 +52,7 @@ class GroupService:
         signing_key = creator.signing_key.public_key().public_bytes_raw()
 
         tree = RatchetTree()
-        self._insert_leaf(tree, public_key)
-        genesis = dumps(
-            ["6200 genesis v1", group_id, title, public_key.hex(), signing_key.hex()],
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        _ = tree.insert_leaf(public_key)
         state = ManagedGroupState(
             group_id=group_id,
             title=title,
@@ -68,7 +62,7 @@ class GroupService:
             _private_tree_keys={0: leaf_key},
             _epoch_secrets=EpochKeySchedule.derive_epoch_secrets(token_bytes(32)),
             member_signing_keys=(signing_key,),
-            transcript_hash=sha256(genesis).digest(),
+            transcript_hash=self._commit_codec.genesis_transcript_hash(group_id, title, public_key, signing_key),
         )
         creator.groups[group_id] = state
         return state
@@ -335,7 +329,7 @@ class GroupService:
         self,
         state: ManagedGroupState,
         tree: RatchetTree,
-        commit: SignedCommit,
+        commit: Commit,
         roster: tuple[bytes | None, ...],
         update: TreeUpdateSecrets,
         secrets: EpochSecrets,
@@ -368,12 +362,6 @@ class GroupService:
             member_signing_keys=roster,
             transcript_hash=sha256(body + commit.confirmation_tag).digest(),
         )
-
-    @staticmethod
-    def _insert_leaf(tree: RatchetTree, public_key: bytes) -> None:
-        # RatchetTree.insert_member only reads the package's leaf public key.
-        """Insert a leaf with the given public key into the supplied tree and return None."""
-        _ = tree.insert_member(PublicKeyPackage("", b"", b"", public_key, b""))
 
     @staticmethod
     def _nodes(tree: RatchetTree) -> Iterator[TreeNode]:

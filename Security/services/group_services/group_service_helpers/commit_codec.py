@@ -1,3 +1,4 @@
+from hashlib import sha256
 from json import dumps
 
 from ....models.group_models.managed_group_state import ManagedGroupState
@@ -11,6 +12,15 @@ ordered update path so they can compute and verify the Commit signature and
 confirmation tag."""
 class CommitCodec:
     """Serialize the fields used to authenticate membership changes."""
+
+    def genesis_transcript_hash(
+        self, group_id: str, title: str, leaf_public_key: bytes, signing_public_key: bytes
+    ) -> bytes:
+        """Hash the canonical founder state at the start of the transcript."""
+        genesis = self._encode([
+            "6200 genesis v1", group_id, title, leaf_public_key.hex(), signing_public_key.hex(),
+        ])
+        return sha256(genesis).digest()
 
     def encode_context(self, state: ManagedGroupState) -> bytes:
         """Return canonical context bytes for the managed state’s group ID, epoch and prior transcript hash."""
