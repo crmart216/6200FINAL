@@ -72,6 +72,8 @@ class MessageService:
         payload = plaintext.encode("utf-8")
 
         with _RATCHET_LOCK:
+            if state.rotation_due:
+                raise ValueError("Epoch rotation required before sending another message.")
             ratchet = self._ratchet(state, secrets, context, leaf_index)
             step = self.advance_ratchet(ratchet)
 

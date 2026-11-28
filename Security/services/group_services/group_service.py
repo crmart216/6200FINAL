@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from Security.models.group_models.remove_member_result import RemoveMemberResult
 
 from ...models.group_models.add_member_result import AddMemberResult
+from ...models.group_models.epoch_rotation_result import EpochRotationResult
 from ...models.group_models.group_state import EpochSecrets
 from ...models.group_models.managed_group_state import ManagedGroupState
 from ...models.group_models.ratchet_tree import RatchetTree, TreeNode
@@ -119,6 +120,46 @@ class GroupService:
         )
         welcome = self._welcomes.build_welcome(committer, invitee, next_state, seed)
         return AddMemberResult(commit, welcome, next_state)
+
+    def rotate_epoch(
+        self, committer: User, state: ManagedGroupState
+    ) -> EpochRotationResult:
+        """Stage a signed key refresh without changing the membership roster."""
+        sender = state.own_leaf_index
+        if sender != 0:
+            raise ValueError("Only the founder at leaf 0 may rotate the epoch.")
+        signing_key = committer.signing_key
+        if signing_key.public_key().public_bytes_raw() != state.require_active_signing_key(sender):
+            raise ValueError("The committer does not own the founder's signing key.")
+        if not state.rotation_due:
+            raise ValueError("The epoch message limit has not been reached.")
+
+        tree = deepcopy(state.ratchet_tree)
+        context = self._commit_codec.encode_context(state)
+        built = self._tree_keys.build_update(state, tree, context)
+        proposal = Proposal(state.group_id, state.epoch, sender, "rotate")
+        commit = SignedCommit(
+            group_id=state.group_id,
+            epoch=state.epoch,
+            sender_leaf_index=sender,
+            proposals=[proposal],
+            update_path=built.update_path,
+            confirmation_tag=b"",
+            signature=b"",
+        )
+        body = self._commit_codec.encode_body(context, commit)
+        seed = EpochKeySchedule.derive_next_seed(
+            self._init_secret(state), built.secrets.commit_secret, body
+        )
+        secrets = EpochKeySchedule.derive_epoch_secrets(seed)
+        tag = digest(secrets.confirmation_key, body, "sha256")
+        commit = replace(commit, confirmation_tag=tag,
+                         signature=signing_key.sign(body + tag))
+        next_state = self._finish(
+            state, tree, commit, state.member_signing_keys,
+            built.secrets, secrets, body,
+        )
+        return EpochRotationResult(commit=commit, state=next_state)
 
     def remove_member(
         self,
@@ -244,6 +285,14 @@ class GroupService:
                 raise ValueError("The removed member cannot advance to the next epoch.")
 
             tree, roster = self._stage_remove(state, target)
+
+        elif proposal.action == "rotate":
+            if sender != 0:
+                raise ValueError("Only the founder at leaf 0 may rotate the epoch.")
+            if not state.rotation_due:
+                raise ValueError("Process the remaining epoch messages before rotating.")
+            tree = deepcopy(state.ratchet_tree)
+            roster = state.member_signing_keys
 
         else:
             raise ValueError(f"Unsupported membership action: {proposal.action!r}.")

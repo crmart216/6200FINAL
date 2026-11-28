@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from .ratchet_tree import RatchetTree
 
+# Project interval: ((sum of three student-ID suffixes) % 10) + 2.
+EPOCH_MESSAGE_LIMIT = 7
+
 @dataclass(eq=False)
 class GroupState:
     """Hold one member's local view of a group at its current epoch.
@@ -46,6 +49,15 @@ class GroupState:
             raise ValueError("Current epoch secrets are missing.")
         return self._epoch_secrets.init_secret
     
+    @property
+    def epoch_message_count(self) -> int:
+        """Count successfully sent or authenticated messages in this epoch."""
+        return sum(r.next_generation for r in self._sender_ratchets.values())
+
+    @property
+    def rotation_due(self) -> bool:
+        return self.epoch_message_count >= EPOCH_MESSAGE_LIMIT
+
     def get_sender_ratchet(self, leaf_index: int) -> SenderRatchet | None:
         return self._sender_ratchets.get(leaf_index)
 
