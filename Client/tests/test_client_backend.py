@@ -13,10 +13,13 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from Client.api_client import ApiClient, ApiHttpError, ApiMalformedResponseError, ApiTransportError
-from Client.client_backend import ClientBackend
+from Client.client_backend import ClientBackend, GroupStateMismatch
 from Client.identity import IdentityService
+from Client.models.group_summary import GroupSummary
+from Client.models.local_group import LocalGroup
 from Client.models.user_profile import UserProfile
 from Client.state_store import ClientStateStore
+from Security.services.group_services.group_service_helpers.group_state_codec import encode_epoch_zero
 
 _ORIGIN = "http://server:8000"
 _URL = "wss://EXAMPLE.test:443/chat?room=study%20group"
@@ -347,3 +350,107 @@ def test_directory_401_preserves_registered_identity(store: ClientStateStore) ->
 
     assert saved is not None
     assert store.load_identity() == saved
+
+
+def _save_account(store: ClientStateStore) -> UserProfile:
+    profile = UserProfile("founder", _NAME)
+    store.save_pending_identity(IdentityService.create_pending_identity(profile))
+    store.save_registered_identity(profile.id, _TOKEN)
+    return profile
+
+
+def _group_response(group: GroupSummary, **overrides: object) -> httpx.Response:
+    return httpx.Response(200, json={
+        "group_id": group.id, "group_name": group.name, "founder_user_id": group.founder_id,
+        "current_epoch": 0, **overrides,
+    })
+
+
+def test_lost_group_response_retries_original_snapshot_and_restores_offline(tmp_path: Path) -> None:
+    captured: list[LocalGroup] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        with closing(ClientStateStore(tmp_path)) as observer:
+            row = observer.load_group(request.url.path.rsplit("/", 1)[-1])
+        assert row is not None and row.status == "pending"
+        assert _body(request) == {"group_name": "Équipe"}
+        assert request.headers["Authorization"] == f"Bearer {_TOKEN}"
+        captured.append(row)
+        if len(captured) == 1:
+            raise httpx.ReadTimeout("Lost response", request=request)
+        return _group_response(row.summary)
+
+    with closing(ClientStateStore(tmp_path)) as store, _backend(store, handle) as backend:
+        _ = _save_account(store)
+        with pytest.raises(ApiTransportError):
+            _ = backend.create_group("  Équipe  ")
+        pending, = backend.list_pending_groups()
+        assert backend.list_groups() == []
+        original = backend.restore_group_state(pending.id)
+
+    with closing(ClientStateStore(tmp_path)) as store, _backend(store, handle) as backend:
+        assert backend.retry_group_creation(pending.id) == pending
+        assert captured[0] == captured[1]
+        assert backend.list_pending_groups() == []
+
+    with closing(ClientStateStore(tmp_path)) as store, _backend(store, _no_requests) as backend:
+        assert backend.list_groups() == [pending]
+        assert backend.retry_group_creation(pending.id) == pending
+        restored = backend.restore_group_state(pending.id)
+        assert restored.ratchet_tree.get_leaf(0).public_key == original.ratchet_tree.get_leaf(0).public_key
+        assert restored.transcript_hash == original.transcript_hash
+        assert encode_epoch_zero(restored) == encode_epoch_zero(original) == captured[0].snapshot
+
+
+@pytest.mark.parametrize("field,value", [
+    ("group_id", "wrong-id"), ("group_name", "Wrong title"),
+    ("founder_user_id", "wrong-founder"), ("current_epoch", 1),
+])
+def test_group_registration_mismatch_leaves_pending(store: ClientStateStore, field: str, value: object) -> None:
+    profile = _save_account(store)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        group = GroupSummary(request.url.path.rsplit("/", 1)[-1], "Title", profile.id)
+        return _group_response(group, **{field: value})
+
+    with _backend(store, handle) as backend:
+        with pytest.raises(GroupStateMismatch if field == "current_epoch" else ApiMalformedResponseError):
+            _ = backend.create_group("Title")
+        assert len(backend.list_pending_groups()) == 1
+        assert backend.list_groups() == []
+
+
+def test_group_retry_validates_saved_metadata_before_http(store: ClientStateStore) -> None:
+    _ = _save_account(store)
+    with _backend(store, lambda _request: httpx.Response(409)) as backend:
+        with pytest.raises(ApiHttpError) as error:
+            _ = backend.create_group("Title")
+        assert error.value.status_code == 409
+        pending, = backend.list_pending_groups()
+    saved = store.load_group(pending.id)
+    assert saved is not None
+    foreign_snapshot = LocalGroup(GroupSummary("other-id", pending.name, pending.founder_id), saved.snapshot)
+    store.save_pending_group(foreign_snapshot)
+    with _backend(store, _no_requests) as backend:
+        with pytest.raises(GroupStateMismatch, match="does not match"):
+            _ = backend.retry_group_creation("other-id")
+    assert store.load_group(pending.id) == saved
+
+
+def test_failed_group_confirmation_keeps_pending_snapshot(store: ClientStateStore, tmp_path: Path) -> None:
+    profile = _save_account(store)
+    with closing(sqlite3.connect(tmp_path / "client.sqlite")) as connection, connection:
+        _ = connection.execute("""
+            CREATE TRIGGER fail_confirmation AFTER UPDATE ON local_group
+            BEGIN SELECT RAISE(FAIL, 'confirmation failed'); END
+            """)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return _group_response(GroupSummary(request.url.path.rsplit("/", 1)[-1], "Title", profile.id))
+
+    with _backend(store, handle) as backend:
+        with pytest.raises(sqlite3.IntegrityError, match="confirmation failed"):
+            _ = backend.create_group("Title")
+        group, = backend.list_pending_groups()
+        assert backend.list_groups() == []
+        assert backend.restore_group_state(group.id).group_id == group.id

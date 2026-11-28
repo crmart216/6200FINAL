@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from Client.api_client import ApiClient, ApiHttpError, ApiMalformedResponseError, ApiTransportError
+from Client.models.group_registration_result import GroupRegistrationResult
 from Client.models.registered_user import RegisteredUser
 from Client.models.registration_challenge import RegistrationChallenge
 from Client.models.registration_result import RegistrationResult
@@ -268,4 +269,35 @@ def test_directory_401_uses_typed_error_without_leaking_response() -> None:
         with pytest.raises(ApiHttpError, match="saved credentials") as error:
             _ = client.list_users(_TOKEN)
     assert error.value.status_code == 401
+    assert _TOKEN not in str(error.value)
+
+
+def test_register_group_uses_authenticated_put_with_title_only() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PUT"
+        assert request.url.path == "/api/groups/group-id"
+        assert request.headers["Authorization"] == f"Bearer {_TOKEN}"
+        assert loads(request.content) == {"group_name": "Équipe"}
+        return httpx.Response(200, json={
+            "group_id": "group-id", "group_name": "Équipe", "founder_user_id": _PROFILE.id, "current_epoch": 0,
+        })
+
+    with closing(ApiClient(_ORIGIN, transport=httpx.MockTransport(handle))) as client:
+        assert client.register_group(_TOKEN, "group-id", "Équipe") == GroupRegistrationResult(
+            "group-id", "Équipe", _PROFILE.id, 0,
+        )
+
+
+@pytest.mark.parametrize("status", [200, 409])
+def test_register_group_preserves_typed_errors(status: int) -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={
+            "group_id": "group-id", "group_name": "Name", "founder_user_id": _PROFILE.id,
+            "current_epoch": False, "detail": _TOKEN,
+        })
+
+    with closing(ApiClient(_ORIGIN, transport=httpx.MockTransport(handle))) as client:
+        with pytest.raises(ApiMalformedResponseError if status == 200 else ApiHttpError) as error:
+            _ = client.register_group(_TOKEN, "group-id", "Name")
+    assert error.value.status_code == status
     assert _TOKEN not in str(error.value)

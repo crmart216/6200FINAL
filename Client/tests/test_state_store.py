@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from Client.models.group_summary import GroupSummary
+from Client.models.local_group import LocalGroup
 from Client.models.local_identity import LocalIdentity
 from Client.models.user_profile import UserProfile
 from Client.state_store import ClientStateStore
@@ -23,7 +25,7 @@ def test_creates_database_and_schema_in_new_directory(tmp_path: Path) -> None:
     database = state_dir / "client.sqlite"
     assert database.is_file()
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
 
 
 def test_pending_identity_survives_reopen(tmp_path: Path, identity: LocalIdentity) -> None:
@@ -122,14 +124,14 @@ def test_unsupported_schema_version_is_rejected(tmp_path: Path, identity: LocalI
 
     database = tmp_path / "client.sqlite"
     with closing(sqlite3.connect(database)) as connection, connection:
-        _ = connection.execute("PRAGMA user_version = 2")
+        _ = connection.execute("PRAGMA user_version = 3")
 
-    with pytest.raises(RuntimeError, match="Unsupported client database schema version: 2"):
+    with pytest.raises(RuntimeError, match="Unsupported client database schema version: 3"):
         with closing(ClientStateStore(tmp_path)):
             pytest.fail("An unsupported database opened successfully.")
 
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
         assert connection.execute("SELECT user_id FROM local_identity").fetchone() == (identity.profile.id,)
 
 
@@ -137,3 +139,36 @@ def test_local_identity_repr_excludes_credentials(identity: LocalIdentity) -> No
     registered = replace(identity, api_token="issued-token")
     assert "private-key" not in repr(registered)
     assert "issued-token" not in repr(registered)
+
+
+def test_v1_migration_preserves_account_and_groups_survive_reopen(tmp_path: Path, identity: LocalIdentity) -> None:
+    registered = replace(identity, api_token="issued-token")
+    with closing(sqlite3.connect(tmp_path / "client.sqlite")) as connection, connection:
+        _ = connection.execute("""
+            CREATE TABLE local_identity (
+                id INTEGER PRIMARY KEY CHECK (id = 1), user_id TEXT NOT NULL,
+                display_name TEXT NOT NULL, signing_private_key BLOB NOT NULL, api_token TEXT
+            )
+            """)
+        _ = connection.execute(
+            "INSERT INTO local_identity VALUES (1, ?, ?, ?, ?)",
+            (identity.profile.id, identity.profile.display_name, identity.signing_private_key, registered.api_token),
+        )
+        _ = connection.execute("PRAGMA user_version = 1")
+
+    pending = LocalGroup(GroupSummary("pending-id", "Pending", identity.profile.id), b"private-snapshot")
+    confirmed = LocalGroup(GroupSummary("confirmed-id", "Confirmed", identity.profile.id), b"other-snapshot")
+    with closing(ClientStateStore(tmp_path)) as store:
+        assert store.load_identity() == registered
+        store.save_pending_group(pending)
+        store.save_pending_group(confirmed)
+        store.confirm_group(confirmed.summary.id, identity.profile.id)
+
+    with closing(ClientStateStore(tmp_path)) as store:
+        assert store.load_identity() == registered
+        assert store.load_group(pending.summary.id) == pending
+        assert store.load_group(confirmed.summary.id) == replace(confirmed, status="confirmed")
+        assert store.list_groups(identity.profile.id) == [confirmed.summary]
+        assert store.list_groups(identity.profile.id, status="pending") == [pending.summary]
+        assert store.list_groups("other-account") == []
+        assert "private-snapshot" not in repr(pending)

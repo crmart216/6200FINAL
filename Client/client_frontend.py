@@ -7,20 +7,10 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from queue import Empty
 from tkinter import messagebox, simpledialog, ttk
-from tkinter.font import nametofont
 from tkinter.scrolledtext import ScrolledText
 from typing import Literal, ParamSpec, TypeVar
 
-from .models.chat_message import ChatMessage
-from .models.group_joined import GroupJoined
-from .models.group_member import GroupMember
-from .models.group_members_updated import GroupMembersUpdated
-from .models.group_summary import GroupSummary
-from .models.invitation import Invitation
-from .models.message_received import MessageReceived
-from .models.types import InvitationDecision
-from .models.user_profile import UserProfile
-from .prototype_backend import PrototypeBackend
+from .prototype_backend import Group, Invitation, Message, PrototypeBackend, User
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -30,22 +20,19 @@ class ClientFrontend:
     def __init__(self, root: tk.Tk, backend: PrototypeBackend) -> None:
         self.root: tk.Tk = root
         self.backend: PrototypeBackend = backend
-        self.user: UserProfile | None = backend.load_session()
+        self.user: User | None = backend.load_session()
         self.active_group: str | None = None
-        self.groups: dict[str, GroupSummary] = {}
+        self.groups: dict[str, Group] = {}
         self.invitations: dict[str, Invitation] = {}
-        self.members: dict[str, GroupMember] = {}
-        self.messages: defaultdict[str, dict[str, ChatMessage]] = defaultdict(dict)
+        self.members: dict[str, User] = {}
+        self.messages: defaultdict[str, dict[str, Message]] = defaultdict(dict)
         self.drafts: dict[str, str] = {}
         self.status: tk.StringVar = tk.StringVar(master=root)
         self.draft: tk.StringVar = tk.StringVar(master=root)
         root.title("6200 Group Chat")
         root.geometry("1100x640")
         root.minsize(920, 500)
-        style = ttk.Style(root)
-        style.configure("Title.TLabel", font=("TkDefaultFont", 17, "bold"))
-        row_font = nametofont("TkDefaultFont", root=root)
-        style.configure("Sidebar.Treeview", font=row_font, rowheight=row_font.metrics("linespace") + 8)
+        ttk.Style(root).configure("Title.TLabel", font=("TkDefaultFont", 17, "bold"))
         self.page: ttk.Frame = ttk.Frame(root, padding=18)
         self.page.pack(fill="both", expand=True)
         self.signup: ttk.Frame = ttk.Frame(self.page, padding=24)
@@ -70,7 +57,7 @@ class ClientFrontend:
         _ = body.rowconfigure(0, weight=1)
         sidebar = ttk.Frame(body)
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 14))
-        self.conversations: ttk.Treeview = self._table(sidebar, ("Conversations", 210))
+        self.conversations: ttk.Treeview = self._table(sidebar, ("Conversations", 160))
         _ = self.conversations.bind("<<TreeviewSelect>>", self._select_group)
         ttk.Button(sidebar, text="Create group", command=self._create_group).pack(fill="x")
 
@@ -95,20 +82,20 @@ class ClientFrontend:
         for frame, label in ((directory, "Directory"), (inbox, "Invitations"), (roster, "Members")):
             tabs.add(frame, text=label)
 
-        self.directory: ttk.Treeview = self._table(directory, ("Display name", 150), ("User ID", 145))
+        self.directory: ttk.Treeview = self._table(directory, ("Display name", 110), ("User ID", 105))
         ttk.Button(directory, text="Refresh directory", command=self._refresh_directory).pack(fill="x")
         self.invite_button: ttk.Button = ttk.Button(directory, text="Invite selected user", command=self._invite)
         self.invite_button.pack(fill="x", pady=(4, 0))
         _ = self.directory.bind("<<TreeviewSelect>>", self._update_actions)
 
-        self.inbox: ttk.Treeview = self._table(inbox, ("Group", 175), ("From / To", 135), ("Status", 90))
+        self.inbox: ttk.Treeview = self._table(inbox, ("Group", 110), ("From / To", 105), ("Status", 80))
         self.accept_button: ttk.Button = ttk.Button(inbox, text="Accept", command=lambda: self._respond("accept"))
         self.decline_button: ttk.Button = ttk.Button(inbox, text="Decline", command=lambda: self._respond("decline"))
         self.accept_button.pack(side="left")
         self.decline_button.pack(side="left", padx=(4, 0))
         _ = self.inbox.bind("<<TreeviewSelect>>", self._update_actions)
 
-        self.roster: ttk.Treeview = self._table(roster, ("Display name", 150), ("Role", 95))
+        self.roster: ttk.Treeview = self._table(roster, ("Display name", 120), ("Role", 90))
         self.remove_button: ttk.Button = ttk.Button(roster, text="Remove selected member", command=self._remove)
         self.remove_button.pack(fill="x")
         _ = self.roster.bind("<<TreeviewSelect>>", self._update_actions)
@@ -153,9 +140,7 @@ class ClientFrontend:
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True, pady=(0, 8))
         keys = list(range(len(columns)))
-        tree = ttk.Treeview(
-            frame, columns=keys, show="headings", selectmode="browse", style="Sidebar.Treeview"
-        )
+        tree = ttk.Treeview(frame, columns=keys, show="headings", selectmode="browse")
 
         def scroll(action: str, amount: str, units: Literal["units", "pages"] = "units") -> None:
             if action == "moveto":
@@ -165,11 +150,11 @@ class ClientFrontend:
 
         scrollbar = ttk.Scrollbar(frame, command=scroll)
         _ = tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
         tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         for key, (label, width) in zip(keys, columns):
             tree.heading(key, text=label)
-            _ = tree.column(key, width=width)
+            _ = tree.column(key, width=width, stretch=False)
         return tree
 
     @staticmethod
@@ -231,14 +216,11 @@ class ClientFrontend:
         group_id = self.active_group
         group = self.groups.get(group_id) if group_id is not None else None
         members = self.backend.list_group_members(group.id) if group is not None else []
-
-        self._render_members(members)
-
-    def _render_members(self, members: Iterable[GroupMember]) -> None:
+        founder_id = group.founder_id if group is not None else None
         self.members = {member.id: member for member in members}
         self._fill(self.roster, (
-            (member.id, (member.display_name, "Founder" if member.is_founder else "Member"))
-            for member in self.members.values()
+            (member.id, (member.display_name, "Founder" if member.id == founder_id else "Member"))
+            for member in members
         ))
         self._update_actions()
 
@@ -285,7 +267,7 @@ class ClientFrontend:
             self._refresh_invitations()
             self.status.set(f"Invitation to {item.invitee.display_name} ({item.invitee.id}) is pending.")
 
-    def _respond(self, decision: InvitationDecision) -> None:
+    def _respond(self, decision: str) -> None:
         invitation_id = self._selection(self.inbox)
         if invitation_id is None:
             return
@@ -325,7 +307,7 @@ class ClientFrontend:
         if self.active_group is not None:
             self._call(self.backend.simulate_incoming, self.active_group)
 
-    def _record_message(self, message: ChatMessage) -> None:
+    def _record_message(self, message: Message) -> None:
         self.messages[message.group_id][message.id] = message
         if message.group_id == self.active_group:
             self._render_messages()
@@ -351,15 +333,14 @@ class ClientFrontend:
                 event = self.backend.events.get_nowait()
             except Empty:
                 break
-            match event:
-                case GroupJoined(group=group):
-                    self._refresh_groups(select=group.id)
-                    self._refresh_invitations()
-                    self.status.set(f"Joined {group.name}.")
-                case MessageReceived(message=message):
-                    self._record_message(message)
-                case GroupMembersUpdated(group_id=group_id, members=members):
-                    if group_id == self.active_group:
-                        self._render_members(members)
-                    self.status.set(f"Member roster updated for {self.groups[group_id].name}.")
+            if event.kind == "group_joined":
+                self._refresh_groups(select=event.group_id)
+                self._refresh_invitations()
+                self.status.set(f"Joined {self.groups[event.group_id].name}.")
+            elif event.kind == "message_received" and event.message is not None:
+                self._record_message(event.message)
+            elif event.kind == "group_members_updated":
+                if event.group_id == self.active_group:
+                    self._refresh_members()
+                self.status.set(f"Member roster updated for {self.groups[event.group_id].name}.")
         _ = self.root.after(50, self._poll_events)

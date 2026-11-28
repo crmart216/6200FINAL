@@ -1,14 +1,16 @@
-"""Synchronous HTTP transport for signup and the user directory."""
+"""Synchronous HTTP transport for signup, the user directory, and group registration."""
 
 from base64 import b64decode, b64encode
 from collections.abc import Callable
 from datetime import datetime
 from math import isfinite
 from typing import TypeVar, cast
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 
+from .models.group_registration_result import GroupRegistrationResult
 from .models.registered_user import RegisteredUser
 from .models.registration_challenge import RegistrationChallenge
 from .models.registration_result import RegistrationResult
@@ -52,11 +54,15 @@ class ApiTransportError(ApiClientError):
 class ApiHttpError(ApiClientError):
     """The server returned an unexpected HTTP status."""
 
-    def __init__(self, status_code: int, retry_after: str | None, *, directory: bool = False) -> None:
-        if directory:
-            message = _DIRECTORY_HTTP_MESSAGES.get(status_code, "The directory request failed.")
-        else:
-            message = _HTTP_MESSAGES.get(status_code, "The server returned an unexpected signup status.")
+    def __init__(
+        self, status_code: int, retry_after: str | None, *,
+        directory: bool = False, message: str | None = None,
+    ) -> None:
+        if message is None:
+            if directory:
+                message = _DIRECTORY_HTTP_MESSAGES.get(status_code, "The directory request failed.")
+            else:
+                message = _HTTP_MESSAGES.get(status_code, "The server returned an unexpected signup status.")
         super().__init__(f"{message} (HTTP {status_code})", status_code=status_code, retry_after=retry_after)
 
 
@@ -127,6 +133,16 @@ def _parse_users(value: object) -> list[RegisteredUser]:
     return [_parse_user(entry) for entry in cast(list[object], value)]
 
 
+def _parse_group(value: object) -> GroupRegistrationResult:
+    data = _object(value)
+    epoch = data.get("current_epoch")
+    if type(epoch) is not int or epoch < 0:
+        raise ValueError
+    return GroupRegistrationResult(
+        _text(data, "group_id"), _text(data, "group_name"), _text(data, "founder_user_id"), epoch
+    )
+
+
 class ApiClient:
     """Call API endpoints using an HTTP(S) origin without /api."""
 
@@ -185,6 +201,12 @@ class ApiClient:
             "GET", "/api/users", 200, _parse_users, headers={"Authorization": f"Bearer {api_token}"}
         )
 
+    def register_group(self, api_token: str, group_id: str, group_name: str) -> GroupRegistrationResult:
+        return self._request(
+            "PUT", f"/api/groups/{quote(group_id, safe='')}", 200, _parse_group,
+            payload={"group_name": group_name}, headers={"Authorization": f"Bearer {api_token}"},
+        )
+
     def _post(self, path: str, payload: dict[str, str], parse: Callable[[object], _T]) -> _T:
         return self._request("POST", path, 201, parse, payload=payload)
 
@@ -207,7 +229,8 @@ class ApiClient:
 
         retry_after = response.headers["Retry-After"] if "Retry-After" in response.headers else None
         if response.status_code != expected_status:
-            raise ApiHttpError(response.status_code, retry_after, directory=path == "/api/users")
+            message = "The group registration request failed." if method == "PUT" else None
+            raise ApiHttpError(response.status_code, retry_after, directory=path == "/api/users", message=message)
 
         try:
             return parse(cast(object, response.json()))

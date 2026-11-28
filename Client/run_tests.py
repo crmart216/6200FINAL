@@ -13,6 +13,10 @@ proof, and mocked HTTP, plus directory authentication and self-filtering.
 test_signup_frontend.py checks signup and manual directory refresh, including
 retry, duplicate clicks, and worker shutdown without a graphical display.
 
+Group coverage includes v1-to-v2 migration, authenticated PUT registration,
+retry after a lost response, local founder snapshot restoration, and Tkinter
+group-list coordination with the backend worker.
+
 The current suite runs offline and requires neither a display nor a server.
 """
 

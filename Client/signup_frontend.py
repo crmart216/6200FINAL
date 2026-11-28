@@ -12,6 +12,8 @@ from tkinter import ttk
 from typing import Literal, Protocol
 
 from .api_client import ApiHttpError, ApiMalformedResponseError, ApiTransportError
+from .client_backend import GroupStateMismatch
+from .models.group_summary import GroupSummary
 from .models.user_profile import UserProfile
 
 
@@ -22,11 +24,38 @@ class SignupBackend(Protocol):
 
     def list_users(self) -> list[UserProfile]: ...
 
+    def list_groups(self) -> list[GroupSummary]: ...
+
+    def list_pending_groups(self) -> list[GroupSummary]: ...
+
+    def create_group(self, name: str) -> GroupSummary: ...
+
+    def retry_group_creation(self, group_id: str) -> GroupSummary: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GroupLists:
+    confirmed: tuple[GroupSummary, ...] = ()
+    pending: tuple[GroupSummary, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRequest:
+    value: str
+    retry: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class GroupResult:
+    lists: GroupLists | None
+    status: str = ""
+
 
 @dataclass(frozen=True, slots=True)
 class SignupResult:
     profile: UserProfile | None = None
     error: str | None = None
+    groups: GroupResult | None = None
 
 
 class _Command(Enum):
@@ -77,12 +106,32 @@ def _directory_error(error: Exception) -> str:
             return "Could not refresh available users. Try again."
 
 
+def _group_error(error: Exception) -> str:
+    match error:
+        case GroupStateMismatch():
+            return str(error)
+        case ApiTransportError():
+            return "Could not reach the server. Retry the pending group."
+        case ApiHttpError(status_code=409):
+            return "The server reported a group conflict."
+        case ApiHttpError(status_code=401):
+            return "The server rejected this client's saved credentials."
+        case ApiMalformedResponseError():
+            return "The server returned an invalid group registration."
+        case sqlite3.Error():
+            return "Could not save the group on this device."
+        case ValueError():
+            return "Enter a nonblank group name without NUL, or select a pending group."
+        case _:
+            return "Could not register the group. Retry it if it is pending."
+
+
 class SignupWorker:
     """Open, use, and close a backend on one thread. Results contain only UI data."""
 
     def __init__(self, open_backend: Callable[[], AbstractContextManager[SignupBackend]]) -> None:
-        self.results: Queue[SignupResult | DirectoryResult] = Queue()
-        self._requests: Queue[str | _Command | None] = Queue()
+        self.results: Queue[SignupResult | DirectoryResult | GroupResult] = Queue()
+        self._requests: Queue[str | _Command | GroupRequest | None] = Queue()
         self._stopping: Event = Event()
         self._thread: Thread = Thread(target=self._run, args=(open_backend,), name="signup", daemon=False)
         self._thread.start()
@@ -92,6 +141,9 @@ class SignupWorker:
 
     def refresh_directory(self) -> None:
         self._requests.put(_Command.REFRESH_DIRECTORY)
+
+    def submit_group(self, request: GroupRequest) -> None:
+        self._requests.put(request)
 
     def close(self) -> None:
         if not self._stopping.is_set():
@@ -106,15 +158,20 @@ class SignupWorker:
             with open_backend() as backend:
                 if self._stopping.is_set():
                     return
-                self.results.put(SignupResult(profile=backend.get_registered_profile()))
+                profile = backend.get_registered_profile()
+                groups = self._load_groups(backend) if profile is not None else None
+                self.results.put(SignupResult(profile=profile, groups=groups))
                 while (request := self._requests.get()) is not None:
                     if self._stopping.is_set():
                         return
                     if isinstance(request, str):
                         try:
-                            self.results.put(SignupResult(profile=backend.register(request)))
+                            profile = backend.register(request)
+                            self.results.put(SignupResult(profile=profile, groups=self._load_groups(backend)))
                         except Exception as error:
                             self.results.put(SignupResult(error=_signup_error(error)))
+                    elif isinstance(request, GroupRequest):
+                        self.results.put(self._register_group(backend, request))
                     else:
                         try:
                             self.results.put(DirectoryResult(users=tuple(backend.list_users())))
@@ -122,6 +179,25 @@ class SignupWorker:
                             self.results.put(DirectoryResult(error=_directory_error(error)))
         except Exception:
             self.results.put(SignupResult(error="Could not open local account data. Check the client settings."))
+
+
+    @staticmethod
+    def _load_groups(backend: SignupBackend, status: str = "") -> GroupResult:
+        try:
+            groups = GroupLists(tuple(backend.list_groups()), tuple(backend.list_pending_groups()))
+        except Exception:
+            return GroupResult(None, f"{status} Could not load local groups.".strip())
+        return GroupResult(groups, status)
+
+    def _register_group(self, backend: SignupBackend, request: GroupRequest) -> GroupResult:
+        try:
+            if request.retry:
+                _ = backend.retry_group_creation(request.value)
+            else:
+                _ = backend.create_group(request.value)
+        except Exception as error:
+            return self._load_groups(backend, _group_error(error))
+        return self._load_groups(backend, "Group registered.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +209,9 @@ class SignupState:
     users: tuple[UserProfile, ...] = ()
     directory_status: str = ""
     refreshing: bool = False
+    groups: GroupLists = GroupLists()
+    group_status: str = ""
+    group_busy: bool = False
 
 
 class SignupController:
@@ -157,6 +236,19 @@ class SignupController:
         self._show(replace(self._state, directory_status="Loading available users…", refreshing=True))
         self._worker.refresh_directory()
 
+    def create_group(self, name: str) -> None:
+        self._submit_group(GroupRequest(name))
+
+    def retry_group_creation(self, group_id: str) -> None:
+        if any(group.id == group_id for group in self._state.groups.pending):
+            self._submit_group(GroupRequest(group_id, retry=True))
+
+    def _submit_group(self, request: GroupRequest) -> None:
+        if self._closed or self._state.profile is None or self._state.group_busy:
+            return
+        self._show(replace(self._state, group_status="Registering group…", group_busy=True))
+        self._worker.submit_group(request)
+
     def poll(self) -> None:
         if self._closed:
             return
@@ -170,8 +262,17 @@ class SignupController:
             else:
                 status = "" if result.users else "No other users are registered."
                 self._show(replace(self._state, users=result.users, directory_status=status, refreshing=False))
+        elif isinstance(result, GroupResult):
+            self._show(replace(
+                self._state, groups=result.lists or self._state.groups,
+                group_status=result.status, group_busy=False,
+            ))
         elif result.profile is not None:
-            self._show(SignupState(profile=result.profile, directory_status="Click Refresh to load available users."))
+            groups = result.groups or GroupResult(None)
+            self._show(SignupState(
+                profile=result.profile, directory_status="Click Refresh to load available users.",
+                groups=groups.lists or GroupLists(), group_status=groups.status,
+            ))
         elif result.error is None or self._state.show_form:
             self._show(SignupState(status=result.error or "", show_form=True, can_submit=True))
         else:
@@ -192,8 +293,8 @@ class SignupFrontend:
     def __init__(self, root: tk.Tk, worker: SignupWorker) -> None:
         self._root: tk.Tk = root
         root.title("6200 Group Chat")
-        root.geometry("620x420")
-        root.minsize(500, 330)
+        root.geometry("700x540")
+        root.minsize(560, 460)
         ttk.Style(root).configure("Title.TLabel", font=("TkDefaultFont", 17, "bold"))
 
         card = ttk.Frame(root, padding=24)
@@ -210,7 +311,32 @@ class SignupFrontend:
         self._status_label: ttk.Label = ttk.Label(card, textvariable=self._status, wraplength=370)
         self._status_label.pack(anchor="w", pady=(10, 0))
 
-        self._directory: ttk.Frame = ttk.Frame(card)
+        self._tabs: ttk.Notebook = ttk.Notebook(card)
+        groups = ttk.Frame(self._tabs, padding=8)
+        self._directory: ttk.Frame = ttk.Frame(self._tabs, padding=8)
+        self._tabs.add(groups, text="Your groups")
+        self._tabs.add(self._directory, text="Available users")
+        ttk.Label(groups, text="Group name").pack(anchor="w")
+        self._group_name: ttk.Entry = ttk.Entry(groups)
+        self._group_name.pack(fill="x")
+        self._create_button: ttk.Button = ttk.Button(groups, text="Create group", command=self._create_group)
+        self._create_button.pack(anchor="w", pady=(4, 6))
+        self._confirmed: tk.Listbox = tk.Listbox(groups, height=4, exportselection=False)
+        self._confirmed.pack(fill="x")
+        ttk.Label(groups, text="Pending registration").pack(anchor="w", pady=(6, 0))
+        self._pending: ttk.Treeview = ttk.Treeview(
+            groups, columns=("name", "id"), show="headings", height=3, selectmode="browse"
+        )
+        self._pending.heading("name", text="Group name")
+        self._pending.heading("id", text="Group ID")
+        self._pending.pack(fill="x")
+        self._retry_button: ttk.Button = ttk.Button(groups, text="Retry", command=self._retry_group)
+        self._retry_button.pack(anchor="w", pady=(4, 0))
+        _ = self._pending.bind("<<TreeviewSelect>>", lambda _event: self._update_retry())
+        self._group_status: tk.StringVar = tk.StringVar(master=root)
+        ttk.Label(groups, textvariable=self._group_status, wraplength=430).pack(anchor="w")
+        self._shown_groups: GroupLists = GroupLists()
+        self._group_busy: bool = False
         ttk.Label(self._directory, text="Available users").pack(anchor="w")
         table = ttk.Frame(self._directory)
         table.pack(fill="x", pady=(4, 0))
@@ -245,6 +371,18 @@ class SignupFrontend:
     def _refresh(self) -> None:
         self._controller.refresh_directory()
 
+    def _create_group(self) -> None:
+        self._controller.create_group(self._group_name.get())
+
+    def _retry_group(self) -> None:
+        selection = self._pending.selection()
+        if selection:
+            self._controller.retry_group_creation(selection[0])
+
+    def _update_retry(self) -> None:
+        enabled = bool(self._pending.selection()) and not self._group_busy
+        _ = self._retry_button.configure(state="normal" if enabled else "disabled")
+
     def _poll(self) -> None:
         self._controller.poll()
         self._poll_id = self._root.after(50, self._poll)
@@ -255,6 +393,8 @@ class SignupFrontend:
         if not state.show_form:
             self._form.pack_forget()
             if state.profile is not None:
+                self._tabs.pack(fill="x", pady=(12, 0))
+                self._render_groups(state)
                 self._render_directory(state)
             return
         was_hidden = not self._form.winfo_manager()
@@ -265,8 +405,21 @@ class SignupFrontend:
         if was_hidden:
             self._name.focus_set()
 
+    def _render_groups(self, state: SignupState) -> None:
+        self._group_status.set(state.group_status)
+        self._group_busy = state.group_busy
+        _ = self._create_button.configure(state="disabled" if state.group_busy else "normal")
+        if state.groups != self._shown_groups:
+            self._confirmed.delete(0, "end")
+            for group in state.groups.confirmed:
+                self._confirmed.insert("end", group.name)
+            self._pending.delete(*self._pending.get_children())
+            for group in state.groups.pending:
+                _ = self._pending.insert("", "end", iid=group.id, values=(group.name, group.id))
+            self._shown_groups = state.groups
+        self._update_retry()
+
     def _render_directory(self, state: SignupState) -> None:
-        self._directory.pack(fill="x", pady=(12, 0))
         self._directory_status.set(state.directory_status)
         _ = self._refresh_button.configure(state="disabled" if state.refreshing else "normal")
         if state.users == self._rendered_users:

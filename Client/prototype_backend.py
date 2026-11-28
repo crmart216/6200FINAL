@@ -1,21 +1,46 @@
 """In-memory translation layer for the Tkinter prototype."""
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from queue import Queue
 from uuid import uuid4
 
-from .models.chat_message import ChatMessage
-from .models.group_joined import GroupJoined
-from .models.group_member import GroupMember
-from .models.group_members_updated import GroupMembersUpdated
-from .models.group_summary import GroupSummary
-from .models.invitation import Invitation
-from .models.message_received import MessageReceived
-from .models.types import BackendEvent, InvitationDecision, InvitationStatus
-from .models.user_profile import UserProfile
 
-_RESPONSE_STATUSES: dict[str, InvitationStatus] = {"accept": "joining", "decline": "declined"}
+@dataclass(frozen=True)
+class User:
+    id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class Group:
+    id: str
+    name: str
+    founder_id: str
+
+
+@dataclass(frozen=True)
+class Invitation:
+    id: str
+    group: Group
+    inviter: User
+    invitee: User
+    status: str = "pending"
+
+
+@dataclass(frozen=True)
+class Message:
+    id: str
+    group_id: str
+    sender: User
+    text: str
+
+
+@dataclass(frozen=True)
+class Event:
+    kind: str
+    group_id: str
+    message: Message | None = None
 
 
 class PrototypeBackend:
@@ -23,60 +48,57 @@ class PrototypeBackend:
 
     def __init__(self, schedule: Callable[[int, Callable[[], None]], object]) -> None:
         self._schedule: Callable[[int, Callable[[], None]], object] = schedule
-        self.events: Queue[BackendEvent] = Queue()
-        self._session: UserProfile | None = None
-        self._users: dict[str, UserProfile] = {
+        self.events: Queue[Event] = Queue()
+        self._session: User | None = None
+        self._users: dict[str, User] = {
             user.id: user for user in (
-                UserProfile("alice", "Alice Chen"),
-                UserProfile("bob", "Bob Patel"),
-                UserProfile("jordan-lee", "Jordan Lee"),
-                UserProfile("jordan-k-lee", "Jordan Lee"),
+                User("alice", "Alice Chen"),
+                User("bob", "Bob Patel"),
+                User("jordan-lee", "Jordan Lee"),
+                User("jordan-k-lee", "Jordan Lee"),
             )
         }
-        self._groups: dict[str, GroupSummary] = {}
+        self._groups: dict[str, Group] = {}
         self._members: dict[str, list[str]] = {}
         self._invitations: dict[str, Invitation] = {}
         self._fail_next: bool = False
 
-    def load_session(self) -> UserProfile | None:
+    def load_session(self) -> User | None:
         return self._session
 
-    def register(self, display_name: str) -> UserProfile:
+    def register(self, display_name: str) -> User:
         name = self._required(display_name, "Enter a display name.")
         if self._session is not None:
             raise ValueError("This demo already has a registered user.")
-        user = UserProfile(uuid4().hex, name)
+        user = User(uuid4().hex, name)
         self._session = self._users[user.id] = user
         project = self.create_group("6200 Project Chat")
         self._members[project.id].extend(["alice", "bob"])
         alice = self._users["alice"]
-        study = GroupSummary("study-group", "Study Group", alice.id)
+        study = Group("study-group", "Study Group", alice.id)
         self._groups[study.id] = study
         self._members[study.id] = [alice.id, "jordan-lee"]
         self._invitations["study-invite"] = Invitation("study-invite", study, alice, user)
         return user
 
-    def list_users(self) -> list[UserProfile]:
+    def list_users(self) -> list[User]:
         user = self._current_user()
         return [peer for peer in self._users.values() if peer.id != user.id]
 
-    def list_groups(self) -> list[GroupSummary]:
+    def list_groups(self) -> list[Group]:
         user = self._current_user()
         return [group for group in self._groups.values() if user.id in self._members[group.id]]
 
-    def create_group(self, name: str) -> GroupSummary:
+    def create_group(self, name: str) -> Group:
         founder = self._current_user()
-        group = GroupSummary(uuid4().hex, self._required(name, "Enter a group name."), founder.id)
+        group = Group(uuid4().hex, self._required(name, "Enter a group name."), founder.id)
         self._groups[group.id] = group
         self._members[group.id] = [founder.id]
         return group
 
-    def list_group_members(self, group_id: str) -> list[GroupMember]:
+    def list_group_members(self, group_id: str) -> list[User]:
         group = self._joined_group(group_id)
-        return [
-            GroupMember(user_id, self._users[user_id].display_name, user_id == group.founder_id)
-            for user_id in self._members[group.id]
-        ]
+        return [self._users[user_id] for user_id in self._members[group.id]]
 
     def invite_user(self, group_id: str, user_id: str) -> Invitation:
         group = self._owned_group(group_id)
@@ -96,32 +118,31 @@ class PrototypeBackend:
         _ = self._current_user()
         return list(self._invitations.values())
 
-    def respond_to_invitation(self, invitation_id: str, decision: InvitationDecision) -> Invitation:
+    def respond_to_invitation(self, invitation_id: str, decision: str) -> Invitation:
         user = self._current_user()
         item = self._invitations.get(invitation_id)
         if item is None or item.invitee.id != user.id or item.status != "pending":
             raise ValueError("Choose a pending incoming invitation.")
-        status = _RESPONSE_STATUSES.get(decision)
-        if status is None:
+        if decision not in ("accept", "decline"):
             raise ValueError("Choose accept or decline.")
-        updated = replace(item, status=status)
+        updated = replace(item, status="joining" if decision == "accept" else "declined")
         self._invitations[item.id] = updated
         if decision == "accept":
             def join() -> None:
                 self._members[item.group.id].append(user.id)
                 self._invitations[item.id] = replace(updated, status="joined")
-                self.events.put(GroupJoined(item.group))
+                self.events.put(Event("group_joined", item.group.id))
 
             _ = self._schedule(1000, join)
         return updated
 
-    def send_message(self, group_id: str, text: str) -> ChatMessage:
+    def send_message(self, group_id: str, text: str) -> Message:
         group = self._joined_group(group_id)
         text = self._required(text, "Write a message first.")
         if self._fail_next:
             self._fail_next = False
             raise ValueError("Simulated send failed. Try again.")
-        return ChatMessage(uuid4().hex, group.id, self._current_user(), text)
+        return Message(uuid4().hex, group.id, self._current_user(), text)
 
     def remove_member(self, group_id: str, user_id: str) -> None:
         group = self._owned_group(group_id)
@@ -129,7 +150,7 @@ class PrototypeBackend:
         if user_id == group.founder_id or user_id not in members:
             raise ValueError("Choose a member other than the founder.")
         members.remove(user_id)
-        self.events.put(GroupMembersUpdated(group.id, tuple(self.list_group_members(group.id))))
+        self.events.put(Event("group_members_updated", group.id))
 
     def simulate_send_failure(self) -> None:
         self._fail_next = True
@@ -137,16 +158,14 @@ class PrototypeBackend:
     def simulate_incoming(self, group_id: str) -> None:
         group = self._joined_group(group_id)
         current = self._current_user()
-        peer_id = next((user_id for user_id in self._members[group.id] if user_id != current.id), None)
-        if peer_id is None:
+        peer = next((member for member in self.list_group_members(group_id) if member != current), None)
+        if peer is None:
             raise ValueError("Choose a conversation with another member to simulate a reply.")
 
         def receive() -> None:
-            if peer_id in self._members[group.id]:
-                message = ChatMessage(
-                    uuid4().hex, group.id, self._users[peer_id], "Are we still on for our next project check-in?"
-                )
-                self.events.put(MessageReceived(message))
+            if peer.id in self._members[group.id]:
+                message = Message(uuid4().hex, group.id, peer, "Are we still on for our next project check-in?")
+                self.events.put(Event("message_received", group.id, message))
 
         _ = self._schedule(500, receive)
 
@@ -157,19 +176,19 @@ class PrototypeBackend:
             raise ValueError(error)
         return value
 
-    def _current_user(self) -> UserProfile:
+    def _current_user(self) -> User:
         if self._session is None:
             raise ValueError("Register first.")
         return self._session
 
-    def _joined_group(self, group_id: str) -> GroupSummary:
+    def _joined_group(self, group_id: str) -> Group:
         user = self._current_user()
         members = self._members.get(group_id)
         if members is None or user.id not in members:
             raise ValueError("Choose a group you have joined.")
         return self._groups[group_id]
 
-    def _owned_group(self, group_id: str) -> GroupSummary:
+    def _owned_group(self, group_id: str) -> Group:
         group = self._joined_group(group_id)
         if group.founder_id != self._current_user().id:
             raise ValueError("Only the founder can manage membership.")

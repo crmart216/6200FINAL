@@ -7,8 +7,9 @@ from time import monotonic, sleep
 import pytest
 
 from Client.api_client import ApiHttpError, ApiTransportError
+from Client.models.group_summary import GroupSummary
 from Client.models.user_profile import UserProfile
-from Client.signup_frontend import SignupController, SignupState, SignupWorker
+from Client.signup_frontend import GroupLists, SignupController, SignupState, SignupWorker
 
 _PROFILE = UserProfile("user-1", "Ryan Martin")
 _FIRST_PEER = UserProfile("user-2", "Ryan Martin")
@@ -24,6 +25,9 @@ class FakeBackend:
         self.refreshes: Queue[None] = Queue()
         self.directory_results: Queue[list[UserProfile] | Exception] = Queue()
         self.lifecycle: list[tuple[str, int]] = []
+        self.group_lists: GroupLists = GroupLists()
+        self.group_requests: Queue[tuple[str, str]] = Queue()
+        self.group_results: Queue[GroupSummary | Exception] = Queue()
 
     @contextmanager
     def open(self) -> Generator["FakeBackend", None, None]:
@@ -49,6 +53,27 @@ class FakeBackend:
         self.lifecycle.append(("refresh", get_ident()))
         self.refreshes.put(None)
         result = self.directory_results.get(timeout=3)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+    def list_groups(self) -> list[GroupSummary]:
+        return list(self.group_lists.confirmed)
+
+    def list_pending_groups(self) -> list[GroupSummary]:
+        return list(self.group_lists.pending)
+
+    def create_group(self, name: str) -> GroupSummary:
+        self.group_requests.put(("create", name))
+        return self._group_result()
+
+    def retry_group_creation(self, group_id: str) -> GroupSummary:
+        self.group_requests.put(("retry", group_id))
+        return self._group_result()
+
+    def _group_result(self) -> GroupSummary:
+        result = self.group_results.get(timeout=3)
         if isinstance(result, Exception):
             raise result
         return result
@@ -225,3 +250,54 @@ def test_close_ignores_late_refresh_result() -> None:
         controller.poll()
         assert states == before
         assert backend.lifecycle[-1][0] == "close"
+
+
+def test_groups_load_locally_and_create_or_retry_once() -> None:
+    backend = FakeBackend(_PROFILE)
+    visible = GroupSummary("old", "Existing group", _PROFILE.id)
+    pending = GroupSummary("saved", "Same name", _PROFILE.id)
+    backend.group_lists = GroupLists((visible,), (pending,))
+    with _start(backend) as (controller, _, states):
+        assert _poll_next(controller, states).groups == backend.group_lists
+        assert backend.refreshes.empty()
+        controller.create_group("Another group")
+        assert backend.group_requests.get(timeout=3) == ("create", "Another group")
+        controller.retry_group_creation(pending.id)
+        assert states[-1].group_busy
+        backend.group_results.put(ApiTransportError(timed_out=True))
+        state = _poll_next(controller, states)
+        assert not state.group_busy
+        assert state.groups == backend.group_lists
+        assert "Retry the pending group" in state.group_status
+
+        controller.retry_group_creation("not-a-saved-id")
+        controller.retry_group_creation(pending.id)
+        assert backend.group_requests.get(timeout=3) == ("retry", pending.id)
+        controller.create_group("Duplicate click")
+        backend.group_lists = GroupLists((visible, pending), ())
+        backend.group_results.put(pending)
+        state = _poll_next(controller, states)
+        assert not state.group_busy
+        assert state.groups == backend.group_lists
+        assert state.group_status == "Group registered."
+    assert backend.group_requests.empty()
+
+
+def test_group_lists_load_after_signup_and_ignore_results_after_close() -> None:
+    backend = FakeBackend(None)
+    visible = GroupSummary("old", "Existing group", _PROFILE.id)
+    backend.group_lists = GroupLists((visible,), ())
+    with _start(backend) as (controller, worker, states):
+        assert _poll_next(controller, states).show_form
+        controller.submit(_PROFILE.display_name)
+        assert backend.requests.get(timeout=3) == _PROFILE.display_name
+        backend.results.put(_PROFILE)
+        assert _poll_next(controller, states).groups.confirmed == (visible,)
+        controller.create_group("New")
+        assert backend.group_requests.get(timeout=3) == ("create", "New")
+        controller.close()
+        backend.group_results.put(visible)
+        worker.join()
+        before = list(states)
+        controller.poll()
+        assert states == before
